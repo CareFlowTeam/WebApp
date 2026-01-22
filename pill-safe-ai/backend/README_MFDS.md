@@ -123,6 +123,23 @@ curl "http://localhost:8000/mfds/drugs?limit=300&full=1"
 두 번째 첨부처럼 `api.odcloud.kr` + Swagger(`infuser.odcloud.kr`)로 제공되는 DUR(병용금기) 데이터는
 MFDS(e약은요)와 별개의 API 스타일입니다. 필요하면 별도 연동을 추가할 수 있습니다.
 
+현재 서버에는 DUR 연동이 포함되어 있습니다.
+
+필요 환경변수(둘 중 하나만 있으면 됨):
+
+- `ODCLOUD_SERVICE_KEY`: 쿼리스트링 `serviceKey=` 방식
+- `ODCLOUD_AUTHORIZATION`: 헤더 `Authorization:` 방식
+
+추가 옵션:
+
+- `ODCLOUD_API_BASE` 기본값: `https://api.odcloud.kr/api`
+- `DUR_SERVICE_PATH` 예: `/15089525/v1/uddi:3f2efdac-942b-494e-919f-8bdc583f65ea`
+
+엔드포인트:
+
+- `POST /dur/check`  (프론트에서 자동 호출)
+- `GET /dur/search?q=...`  (디버깅/탐색용)
+
 ## 출력 형식
 
 기본은 정규화된 형태로 저장합니다:

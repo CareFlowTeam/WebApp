@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Header from './components/Header';
 import CameraCapture from './components/CameraCapture';
 import DrugInput from './components/DrugInput';
@@ -6,7 +6,7 @@ import DrugListDisplay from './components/DrugListDisplay';
 import DangerCard from './components/DangerCard';
 import AnalysisReport from './components/AnalysisReport';
 import VoiceGuidePlayer from './components/VoiceGuidePlayer';
-import { checkSafety } from './api/pillApi';
+import { checkDur, checkSafety } from './api/pillApi';
 import useSpeechSynthesis from './hooks/useSpeechSynthesis';
 import { extractDrugCandidates } from './utils/ocrProcessor';
 import { matchDrug } from './utils/drugMatcher';
@@ -23,6 +23,7 @@ function App() {
     const [ageGroup, setAgeGroup] = useState('');
     const [pendingRecommendation, setPendingRecommendation] = useState(null);
     const [pendingRecommendationText, setPendingRecommendationText] = useState('');
+    const [durInteractions, setDurInteractions] = useState({ warnings: [], cautions: [], info: [] });
     const { speak } = useSpeechSynthesis({ lang: 'ko-KR' }); // 음성 기능 가져오기
 
     const speakWithPreference = (text) => speak(text, { gender: voiceGender });
@@ -81,10 +82,53 @@ function App() {
         }
     }, [pendingRecommendationText]);
 
-    const interactions = useMemo(
+    const localInteractions = useMemo(
         () => checkInteractions(pillList, ageGroup ? { ageGroup } : undefined),
         [pillList, ageGroup]
     );
+
+    useEffect(() => {
+        let cancelled = false;
+        const run = async () => {
+            if ((pillList?.length ?? 0) < 2) {
+                if (!cancelled) setDurInteractions({ warnings: [], cautions: [], info: [] });
+                return;
+            }
+
+            try {
+                const res = await checkDur(pillList, { scanLimit: 3000, perPage: 100, maxPages: 80 });
+                if (cancelled) return;
+                if (res?.ok === false) {
+                    setDurInteractions({ warnings: [], cautions: [], info: [] });
+                    return;
+                }
+                setDurInteractions({
+                    warnings: res?.warnings ?? [],
+                    cautions: res?.cautions ?? [],
+                    info: res?.info ?? [],
+                });
+            } catch {
+                if (!cancelled) setDurInteractions({ warnings: [], cautions: [], info: [] });
+            }
+        };
+        run();
+        return () => {
+            cancelled = true;
+        };
+    }, [pillList]);
+
+    const interactions = useMemo(() => {
+        const warnings = [...(localInteractions?.warnings ?? []), ...(durInteractions?.warnings ?? [])];
+        const cautions = [...(localInteractions?.cautions ?? []), ...(durInteractions?.cautions ?? [])];
+        const info = [...(localInteractions?.info ?? []), ...(durInteractions?.info ?? [])];
+        return {
+            ...localInteractions,
+            warnings,
+            cautions,
+            info,
+            dur: durInteractions,
+        };
+    }, [localInteractions, durInteractions]);
 
     const handleAnalyze = async () => {
         setIsAnalyzing(true);

@@ -43,6 +43,14 @@ except Exception:  # pragma: no cover
 from model import ocr_reader
 from matcher import extract_candidates, match_drug
 from mfds_openapi import MFDSOpenAPIClient, MFDSService, MFDSOpenAPIError, normalize_drug_item
+from odcloud_openapi import (
+    ODCloudOpenAPIClient,
+    ODCloudService,
+    ODCloudOpenAPIError,
+    match_row_to_pair,
+    row_product_names,
+    row_reason,
+)
 
 app = FastAPI()
 
@@ -63,6 +71,13 @@ class TTSRequest(BaseModel):
     voice: str | None = None
     rate: str | None = None  # e.g. "+0%", "+10%"
     volume: str | None = None  # e.g. "+0%"
+
+
+class DurCheckRequest(BaseModel):
+    drug_names: List[str]
+    scan_limit: int | None = None
+    per_page: int | None = None
+    max_pages: int | None = None
 
 
 VOICE_BY_GENDER = {
@@ -144,6 +159,24 @@ def _collect_forward_params(request: Request, *, excluded: set[str]) -> dict[str
             continue
         out[k] = str(v)
     return out
+
+
+def _get_odcloud_client() -> ODCloudOpenAPIClient | None:
+    service_key = os.getenv("ODCLOUD_SERVICE_KEY", "").strip()
+    authorization = os.getenv("ODCLOUD_AUTHORIZATION", "").strip()
+    if not service_key and not authorization:
+        return None
+    base = os.getenv("ODCLOUD_API_BASE", "https://api.odcloud.kr/api").strip() or "https://api.odcloud.kr/api"
+    return ODCloudOpenAPIClient(base_url=base, service_key=service_key or None, authorization=authorization or None)
+
+
+def _get_dur_service() -> ODCloudService:
+    # Default to the latest known DUR dataset path (can be overridden via env).
+    path = os.getenv(
+        "DUR_SERVICE_PATH",
+        "/15089525/v1/uddi:3f2efdac-942b-494e-919f-8bdc583f65ea",
+    ).strip()
+    return ODCloudService(service_path=path)
 
 
 async def _synthesize_edge_tts_mp3(text: str, voice: str, rate: str | None, volume: str | None) -> bytes:
@@ -391,6 +424,134 @@ async def mfds_drugs(
         return _json_error("mfds_openapi_error", msg, status_code=502)
     except Exception as e:
         return _json_error("mfds_unknown_error", f"{type(e).__name__}: {e}", status_code=500)
+
+
+@app.get("/dur/search")
+async def dur_search(
+    request: Request,
+    q: str = Query(min_length=1),
+    limit: int = Query(50, ge=1, le=500),
+    scan_limit: int = Query(2000, ge=50, le=20000),
+    per_page: int = Query(100, ge=1, le=500),
+    max_pages: int = Query(50, ge=1, le=500),
+):
+    """Search DUR (병용금기) rows by product name substring (best-effort).
+
+    NOTE: The ODCloud swagger often only documents paging, so we do client-side filtering
+    unless you pass advanced ODCloud query params via the query string.
+    """
+
+    client = _get_odcloud_client()
+    if client is None:
+        return _json_error(
+            "odcloud_key_missing",
+            "Server is not configured. Set ODCLOUD_SERVICE_KEY or ODCLOUD_AUTHORIZATION (and optionally ODCLOUD_API_BASE, DUR_SERVICE_PATH).",
+            status_code=503,
+        )
+
+    service = _get_dur_service()
+    try:
+        extra = _collect_forward_params(request, excluded={"q", "limit", "scan_limit", "per_page", "max_pages"})
+
+        qn = q.strip().lower()
+        matched: list[dict] = []
+        for row in client.iter_rows(
+            service,
+            limit=scan_limit,
+            per_page=per_page,
+            extra_params=extra,
+            max_pages=max_pages,
+        ):
+            a, b = row_product_names(row)
+            hay = f"{a or ''} {b or ''}".lower()
+            if qn in hay:
+                matched.append(
+                    {
+                        "productA": a,
+                        "productB": b,
+                        "reason": row_reason(row),
+                        "raw": row,
+                    }
+                )
+                if len(matched) >= limit:
+                    break
+
+        return {"status": "ok", "q": q, "count": len(matched), "items": matched}
+    except ODCloudOpenAPIError as e:
+        return _json_error("dur_openapi_error", str(e), status_code=502)
+    except Exception as e:
+        return _json_error("dur_unknown_error", f"{type(e).__name__}: {e}", status_code=500)
+
+
+@app.post("/dur/check")
+async def dur_check(payload: DurCheckRequest):
+    """Check contraindicated pairs via ODCloud DUR dataset (best-effort name matching)."""
+
+    names = [str(x or "").strip() for x in (payload.drug_names or [])]
+    names = [x for x in names if x]
+    if len(names) < 2:
+        return {"status": "ok", "warnings": [], "cautions": [], "info": []}
+
+    client = _get_odcloud_client()
+    if client is None:
+        return _json_error(
+            "odcloud_key_missing",
+            "Server is not configured. Set ODCLOUD_SERVICE_KEY or ODCLOUD_AUTHORIZATION.",
+            status_code=503,
+        )
+
+    service = _get_dur_service()
+
+    scan_limit = int(payload.scan_limit or 3000)
+    scan_limit = max(100, min(scan_limit, 20000))
+    per_page = int(payload.per_page or 100)
+    per_page = max(1, min(per_page, 500))
+    max_pages = int(payload.max_pages or 80)
+    max_pages = max(1, min(max_pages, 500))
+
+    # Pairwise matching against scanned rows
+    warnings: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    try:
+        rows = client.iter_rows(service, limit=scan_limit, per_page=per_page, max_pages=max_pages)
+        for row in rows:
+            a, b = row_product_names(row)
+            if not a or not b:
+                continue
+
+            # Try to match any pair of provided drug names against this row
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    left = names[i]
+                    right = names[j]
+                    if not left or not right:
+                        continue
+
+                    key = (left, right) if left <= right else (right, left)
+                    if key in seen_pairs:
+                        continue
+
+                    if match_row_to_pair(row, left, right):
+                        seen_pairs.add(key)
+                        reason = row_reason(row)
+                        msg = f"{left} + {right} 병용금기" + (f" — {reason}" if reason else "")
+                        warnings.append(
+                            {
+                                "severity": "danger",
+                                "title": "병용금기(DUR)",
+                                "message": msg,
+                                "related": [left, right],
+                                "source": "dur",
+                                "raw": row,
+                            }
+                        )
+
+        return {"status": "ok", "warnings": warnings, "cautions": [], "info": []}
+    except ODCloudOpenAPIError as e:
+        return _json_error("dur_openapi_error", str(e), status_code=502)
+    except Exception as e:
+        return _json_error("dur_unknown_error", f"{type(e).__name__}: {e}", status_code=500)
 
 
 @app.post("/tts")
