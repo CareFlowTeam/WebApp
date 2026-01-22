@@ -20,3 +20,15 @@ export const searchMfdsDrugs = async (query, limit = 20) => {
     const res = await api.get('/mfds/search', { params: { q, limit } });
     return res.data;
 };
+
+export const checkDur = async (drugNames, options = {}) => {
+    const names = (drugNames ?? []).map((n) => String(n ?? '').trim()).filter(Boolean);
+    if (names.length < 2) return { status: 'ok', warnings: [], cautions: [], info: [] };
+    const res = await api.post('/dur/check', {
+        drug_names: names,
+        scan_limit: options.scanLimit,
+        per_page: options.perPage,
+        max_pages: options.maxPages,
+    });
+    return res.data;
+};
