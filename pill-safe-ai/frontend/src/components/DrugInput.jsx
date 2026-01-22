@@ -106,7 +106,7 @@ function DrugInput({ onAdd }) {
                                 <button
                                     key={`cached-${seq || name}-${entp}`}
                                     type="button"
-                                    onClick={() => onAdd(name)}
+                                    onClick={() => onAdd(name, { itemSeq: seq || null, entpName: entp || null, source: 'mfdsCache' })}
                                     style={{
                                         textAlign: 'left',
                                         padding: '10px 12px',
@@ -145,7 +145,7 @@ function DrugInput({ onAdd }) {
                                 <button
                                     key={`${seq || name}-${entp}`}
                                     type="button"
-                                    onClick={() => onAdd(name)}
+                                    onClick={() => onAdd(name, { itemSeq: seq || null, entpName: entp || null, source: 'mfds' })}
                                     style={{
                                         textAlign: 'left',
                                         padding: '10px 12px',

@@ -178,6 +178,18 @@ def row_product_names(row: Dict[str, Any]) -> Tuple[str | None, str | None]:
     return (a or None, b or None)
 
 
+def row_product_codes(row: Dict[str, Any]) -> Tuple[str | None, str | None]:
+    """Best-effort extraction for product-code pairs in DUR rows."""
+
+    # Common variants
+    a = row.get("제품코드A") or row.get("제품코드1") or row.get("의약품코드") or row.get("대상의약품코드")
+    b = row.get("제품코드B") or row.get("제품코드2") or row.get("대상의약품코드")
+
+    a = str(a).strip() if a else None
+    b = str(b).strip() if b else None
+    return (a or None, b or None)
+
+
 def row_reason(row: Dict[str, Any]) -> str:
     for k in ("금기사유", "상세정보", "기사유", "비고"):
         v = row.get(k)
@@ -186,7 +198,21 @@ def row_reason(row: Dict[str, Any]) -> str:
     return ""
 
 
-def match_row_to_pair(row: Dict[str, Any], left: str, right: str) -> bool:
+def match_row_to_pair(
+    row: Dict[str, Any],
+    left: str,
+    right: str,
+    *,
+    left_code: str | None = None,
+    right_code: str | None = None,
+) -> bool:
+    # Code-first exact match when codes are provided.
+    if left_code and right_code:
+        ra, rb = row_product_codes(row)
+        if ra and rb:
+            if (left_code == ra and right_code == rb) or (left_code == rb and right_code == ra):
+                return True
+
     a, b = row_product_names(row)
     if not a or not b:
         return False

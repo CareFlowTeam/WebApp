@@ -22,10 +22,25 @@ export const searchMfdsDrugs = async (query, limit = 20) => {
 };
 
 export const checkDur = async (drugNames, options = {}) => {
-    const names = (drugNames ?? []).map((n) => String(n ?? '').trim()).filter(Boolean);
+    const items = Array.isArray(drugNames) ? drugNames : [];
+    const asObjects = items.every((x) => x && typeof x === 'object' && !Array.isArray(x));
+    const names = items
+        .map((n) => (asObjects ? String(n?.name ?? '').trim() : String(n ?? '').trim()))
+        .filter(Boolean);
+
     if (names.length < 2) return { status: 'ok', warnings: [], cautions: [], info: [] };
+
+    const drugs = asObjects
+        ? items.map((d) => ({
+            name: String(d?.name ?? '').trim(),
+            itemSeq: d?.itemSeq ?? null,
+            productCode: d?.productCode ?? null,
+        }))
+        : null;
+
     const res = await api.post('/dur/check', {
         drug_names: names,
+        drugs,
         scan_limit: options.scanLimit,
         per_page: options.perPage,
         max_pages: options.maxPages,

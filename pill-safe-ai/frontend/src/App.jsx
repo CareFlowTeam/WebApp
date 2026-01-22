@@ -16,6 +16,7 @@ import './styles/index.css';
 
 function App() {
     const [pillList, setPillList] = useState([]); // canonical names (strings)
+    const [pillMeta, setPillMeta] = useState({}); // { [canonicalName]: { itemSeq?, entpName?, source? } }
     const [aiReport, setAiReport] = useState('');
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [cameraRecommendations, setCameraRecommendations] = useState([]);
@@ -29,11 +30,26 @@ function App() {
     const speakWithPreference = (text) => speak(text, { gender: voiceGender });
 
     // 약 추가 및 음성 안내
-    const handleAddPill = (rawName) => {
+    const handleAddPill = (rawName, meta) => {
         const name = String(rawName ?? '').trim();
         if (!name) return;
         const matched = matchDrug(name);
         const canonical = matched?.canonicalName ?? name;
+
+        if (meta && typeof meta === 'object') {
+            const itemSeq = meta?.itemSeq ? String(meta.itemSeq).trim() : '';
+            const entpName = meta?.entpName ? String(meta.entpName).trim() : '';
+            const source = meta?.source ? String(meta.source).trim() : '';
+            setPillMeta((prev) => ({
+                ...prev,
+                [canonical]: {
+                    ...(prev?.[canonical] ?? {}),
+                    itemSeq: itemSeq || (prev?.[canonical]?.itemSeq ?? null),
+                    entpName: entpName || (prev?.[canonical]?.entpName ?? null),
+                    source: source || (prev?.[canonical]?.source ?? null),
+                },
+            }));
+        }
 
         setPillList((prev) => {
             if (prev.includes(canonical)) return prev;
@@ -96,7 +112,12 @@ function App() {
             }
 
             try {
-                const res = await checkDur(pillList, { scanLimit: 3000, perPage: 100, maxPages: 80 });
+                const drugs = (pillList ?? []).map((name) => ({
+                    name,
+                    itemSeq: pillMeta?.[name]?.itemSeq ?? null,
+                    entpName: pillMeta?.[name]?.entpName ?? null,
+                }));
+                const res = await checkDur(drugs, { scanLimit: 3000, perPage: 100, maxPages: 80 });
                 if (cancelled) return;
                 if (res?.ok === false) {
                     setDurInteractions({ warnings: [], cautions: [], info: [] });
@@ -115,7 +136,7 @@ function App() {
         return () => {
             cancelled = true;
         };
-    }, [pillList]);
+    }, [pillList, pillMeta]);
 
     const interactions = useMemo(() => {
         const warnings = [...(localInteractions?.warnings ?? []), ...(durInteractions?.warnings ?? [])];
