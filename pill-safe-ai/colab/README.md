@@ -49,6 +49,10 @@ Colab은 Linux 환경이므로 `backend/requirements.txt` 대신 `backend/requir
 
 ## 3) 백엔드 실행
 
+### (선택) MFDS/DUR 키(Secrets) 넣기
+
+- Colab 좌측 **Secrets(열쇠 아이콘)** 에서 `MFDS_SERVICE_KEY`, `ODCLOUD_API_KEY`를 등록한 뒤 템플릿 노트북의 키 주입 셀을 실행하세요.
+
 Colab 노트북 셀에서 uvicorn을 백그라운드로 띄우기:
 
 ```bash
