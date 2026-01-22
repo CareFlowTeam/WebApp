@@ -49,6 +49,7 @@ from odcloud_openapi import (
     ODCloudOpenAPIError,
     match_row_to_pair,
     row_product_names,
+    row_product_codes,
     row_reason,
 )
 
@@ -74,7 +75,11 @@ class TTSRequest(BaseModel):
 
 
 class DurCheckRequest(BaseModel):
-    drug_names: List[str]
+    drug_names: List[str] | None = None
+
+    # Optional richer input with codes for exact matching.
+    # For MFDS e약은요, itemSeq is a good candidate to try as a product code.
+    drugs: List[dict] | None = None
     scan_limit: int | None = None
     per_page: int | None = None
     max_pages: int | None = None
@@ -463,12 +468,15 @@ async def dur_search(
             max_pages=max_pages,
         ):
             a, b = row_product_names(row)
+            ca, cb = row_product_codes(row)
             hay = f"{a or ''} {b or ''}".lower()
             if qn in hay:
                 matched.append(
                     {
                         "productA": a,
                         "productB": b,
+                        "codeA": ca,
+                        "codeB": cb,
                         "reason": row_reason(row),
                         "raw": row,
                     }
@@ -487,9 +495,26 @@ async def dur_search(
 async def dur_check(payload: DurCheckRequest):
     """Check contraindicated pairs via ODCloud DUR dataset (best-effort name matching)."""
 
-    names = [str(x or "").strip() for x in (payload.drug_names or [])]
-    names = [x for x in names if x]
-    if len(names) < 2:
+    # Accept either plain names or richer objects with codes.
+    drugs_in: list[dict] = []
+    if isinstance(payload.drugs, list):
+        drugs_in = [x for x in payload.drugs if isinstance(x, dict)]
+
+    names_in = [str(x or "").strip() for x in (payload.drug_names or [])]
+    names_in = [x for x in names_in if x]
+
+    drugs: list[dict] = []
+    if drugs_in:
+        for d in drugs_in:
+            name = str(d.get("name") or d.get("itemName") or "").strip()
+            if not name:
+                continue
+            code = str(d.get("product_code") or d.get("productCode") or d.get("item_seq") or d.get("itemSeq") or "").strip() or None
+            drugs.append({"name": name, "code": code})
+    else:
+        drugs = [{"name": n, "code": None} for n in names_in]
+
+    if len(drugs) < 2:
         return {"status": "ok", "warnings": [], "cautions": [], "info": []}
 
     client = _get_odcloud_client()
@@ -521,10 +546,12 @@ async def dur_check(payload: DurCheckRequest):
                 continue
 
             # Try to match any pair of provided drug names against this row
-            for i in range(len(names)):
-                for j in range(i + 1, len(names)):
-                    left = names[i]
-                    right = names[j]
+            for i in range(len(drugs)):
+                for j in range(i + 1, len(drugs)):
+                    left = str(drugs[i].get("name") or "").strip()
+                    right = str(drugs[j].get("name") or "").strip()
+                    left_code = drugs[i].get("code")
+                    right_code = drugs[j].get("code")
                     if not left or not right:
                         continue
 
@@ -532,7 +559,7 @@ async def dur_check(payload: DurCheckRequest):
                     if key in seen_pairs:
                         continue
 
-                    if match_row_to_pair(row, left, right):
+                    if match_row_to_pair(row, left, right, left_code=left_code, right_code=right_code):
                         seen_pairs.add(key)
                         reason = row_reason(row)
                         msg = f"{left} + {right} 병용금기" + (f" — {reason}" if reason else "")
