@@ -47,6 +47,17 @@ const MainPage = () => {
   const [ocrLines, setOcrLines] = useState([]);
   const [ocrLoading, setOcrLoading] = useState(false);
 
+  const [savedMeds, setSavedMeds] = useState([]); // 복용 중인 약 목록
+  const [durLoading, setDurLoading] = useState(false);
+  const [durResults, setDurResults] = useState([]);
+  const [durError, setDurError] = useState('');
+  const [durStatus, setDurStatus] = useState({ checkedAt: null, available: null, source: '', message: '' });
+  const [durQuickAdd, setDurQuickAdd] = useState('');
+  const [durSheetOpen, setDurSheetOpen] = useState(false);
+  const [durSelectedHit, setDurSelectedHit] = useState(null);
+  const [durSheetMounted, setDurSheetMounted] = useState(false);
+  const [durSheetVisible, setDurSheetVisible] = useState(false);
+
   const [filters, setFilters] = useState({
     pregnancy: false,
     drowsy: false,
@@ -60,6 +71,230 @@ const MainPage = () => {
 
   const FLASK_BASE = String(import.meta?.env?.VITE_FLASK_BASE || '').trim().replace(/\/$/, '');
   const FASTAPI_BASE = String(import.meta?.env?.VITE_FASTAPI_BASE || '').trim().replace(/\/$/, '');
+
+  // 복용 약 localStorage sync
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('mediclens.savedMeds') || '[]';
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        const cleaned = arr
+          .map((x) => String(x || '').trim())
+          .filter(Boolean)
+          .slice(0, 20);
+        setSavedMeds(cleaned);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mediclens.savedMeds', JSON.stringify(savedMeds));
+    } catch {
+      // ignore
+    }
+  }, [savedMeds]);
+
+  const addSavedMed = (name) => {
+    const n = String(name || '').trim();
+    if (!n) return;
+    setSavedMeds((prev) => {
+      const next = Array.isArray(prev) ? [...prev] : [];
+      const exists = next.some((x) => String(x).toLowerCase() === n.toLowerCase());
+      if (!exists) next.unshift(n);
+      return next.slice(0, 20);
+    });
+    setInfoMessage('복용 목록에 추가했어요.');
+  };
+
+  const removeSavedMed = (name) => {
+    const n = String(name || '').trim();
+    if (!n) return;
+    setSavedMeds((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x).toLowerCase() !== n.toLowerCase()) : []));
+  };
+
+  const clearSavedMeds = () => {
+    setSavedMeds([]);
+    setDurResults([]);
+    setDurError('');
+  };
+
+  const runDurCheck = async () => {
+    setDurError('');
+    setDurResults([]);
+    if (!savedMeds || savedMeds.length < 2) {
+      setDurError('병용 금기 확인은 2개 이상의 약을 추가해야 해요.');
+      return;
+    }
+
+    setDurLoading(true);
+    try {
+      const payload = { drugs: savedMeds.map((n) => ({ name: n })) };
+      const candidates = [
+        {
+          label: 'fastapi',
+          url: FASTAPI_BASE ? `${FASTAPI_BASE}/dur/check` : '/ml/dur/check',
+        },
+        {
+          label: 'flask',
+          // Flask fallback (when only Flask 5000 is running)
+          url: FLASK_BASE ? `${FLASK_BASE}/ml/dur/check` : '/api/ml/dur/check',
+        },
+      ];
+
+      let lastErr = '';
+      let items = [];
+
+      for (const c of candidates) {
+        try {
+          const resp = await fetch(c.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+
+          const rawText = await resp.text().catch(() => '');
+          let data = {};
+          try {
+            data = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            data = {};
+          }
+
+          if (!resp.ok) {
+            const detail = data?.detail;
+            const msgFromDetail =
+              detail && typeof detail === 'object'
+                ? String(detail?.message || detail?.code || '').trim()
+                : String(detail || '').trim();
+            const msg =
+              msgFromDetail ||
+              String(data?.message || data?.error || '').trim() ||
+              (rawText ? String(rawText).trim().slice(0, 200) : '');
+
+            lastErr = msg
+              ? `병용 금기 확인에 실패했어요. (HTTP ${resp.status}) ${msg}`
+              : `병용 금기 확인에 실패했어요. (HTTP ${resp.status})`;
+
+            // If the proxy/upstream is down, try next candidate.
+            if (resp.status === 404 || resp.status === 502 || resp.status === 503 || resp.status === 504) {
+              continue;
+            }
+            continue;
+          }
+
+          items = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          lastErr = '';
+          break;
+        } catch (e) {
+          console.warn(`dur check request failed (${c.label})`, e);
+          lastErr = '서버에 연결할 수 없어요. 백엔드(FastAPI/Flask)가 실행 중인지 확인해주세요.';
+        }
+      }
+
+      if (lastErr) {
+        setDurError(lastErr);
+        return;
+      }
+
+      setDurResults(items);
+      setInfoMessage(items.length ? '병용 금기 결과를 확인했어요.' : '현재 추가된 조합에서 병용 금기 근거를 찾지 못했어요.');
+      setTimeout(() => {
+        document.getElementById('interaction')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 0);
+    } catch (e) {
+      console.error(e);
+      setDurError('서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.');
+    } finally {
+      setDurLoading(false);
+    }
+  };
+
+  const fetchDurStatus = async () => {
+    const candidates = [
+      {
+        label: 'fastapi',
+        url: FASTAPI_BASE ? `${FASTAPI_BASE}/dur/status` : '/ml/dur/status',
+      },
+      {
+        label: 'flask',
+        url: FLASK_BASE ? `${FLASK_BASE}/ml/dur/status` : '/api/ml/dur/status',
+      },
+    ];
+
+    for (const c of candidates) {
+      try {
+        const resp = await fetch(c.url, { method: 'GET' });
+        const rawText = await resp.text().catch(() => '');
+        let data = {};
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch {
+          data = {};
+        }
+
+        if (!resp.ok) {
+          const msg =
+            String(data?.message || data?.error || '').trim() ||
+            (rawText ? String(rawText).trim().slice(0, 160) : '');
+          setDurStatus({ checkedAt: new Date(), available: false, source: c.label, message: msg });
+          if (resp.status === 404 || resp.status === 502 || resp.status === 503 || resp.status === 504) continue;
+          return;
+        }
+
+        const available = Boolean(data?.available ?? data?.configured ?? false);
+        setDurStatus({ checkedAt: new Date(), available, source: c.label, message: '' });
+        return;
+      } catch {
+        // try next candidate
+      }
+    }
+
+    setDurStatus({ checkedAt: new Date(), available: null, source: '', message: '서버에 연결할 수 없어요.' });
+  };
+
+  useEffect(() => {
+    fetchDurStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!durSheetOpen) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setDurSheetOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [durSheetOpen]);
+
+  useEffect(() => {
+    // Mount -> animate in
+    if (durSheetOpen) {
+      setDurSheetMounted(true);
+      // Next tick so transitions apply
+      const t = setTimeout(() => setDurSheetVisible(true), 10);
+      return () => clearTimeout(t);
+    }
+
+    // Animate out -> unmount
+    setDurSheetVisible(false);
+    const t = setTimeout(() => setDurSheetMounted(false), 220);
+    return () => clearTimeout(t);
+  }, [durSheetOpen]);
+
+  const openDurSheet = (hit) => {
+    setDurSelectedHit(hit || null);
+    setDurSheetOpen(true);
+  };
+
+  const closeDurSheet = () => {
+    setDurSheetOpen(false);
+  };
 
   const _toFloat = (v) => {
     if (v === null || v === undefined) return null;
@@ -135,8 +370,8 @@ const MainPage = () => {
       return;
     }
 
-    const name = String(p?.name || '').trim();
-    const address = String(p?.address || '').trim();
+    const name = String(p?.name ?? p?.place_name ?? p?.placeName ?? '').trim();
+    const address = String(p?.address ?? p?.address_name ?? p?.addressName ?? '').trim();
     const query = address || name;
     const geo = await _geocode(query);
     if (geo?.lat != null && geo?.lon != null) {
@@ -585,7 +820,6 @@ const MainPage = () => {
   const handleAnalyzeOcr = async () => {
     setErrorMessage('');
     setInfoMessage('');
-    setOcrLines([]);
 
     if (!selectedFile) {
       setErrorMessage('먼저 이미지를 업로드해주세요.');
@@ -597,23 +831,80 @@ const MainPage = () => {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      // FastAPI: POST /analyze/ocr?user_id=...
-      const url = FASTAPI_BASE ? `${FASTAPI_BASE}/analyze/ocr?user_id=demo` : '/ml/analyze/ocr?user_id=demo';
-      const response = await fetch(url, {
-        method: 'POST',
-        body: formData,
-      });
+      const _normalizeDetectedText = (payload) => {
+        const v = payload?.detected_text;
+        if (Array.isArray(v)) return v.map((x) => String(x ?? '').trim()).filter(Boolean);
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (!s) return [];
+          // Flask OCR은 공백으로 이어붙인 문자열로 오는 경우가 많아서 한 줄로 취급
+          return s.includes('\n') ? s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean) : [s];
+        }
+        return [];
+      };
 
-      const data = await response.json().catch(() => ({}));
+      const candidates = [
+        {
+          label: 'fastapi',
+          url: FASTAPI_BASE ? `${FASTAPI_BASE}/analyze/ocr?user_id=demo` : '/ml/analyze/ocr?user_id=demo',
+        },
+        {
+          label: 'flask',
+          // Flask: POST /ml/analyze/ocr
+          url: FLASK_BASE ? `${FLASK_BASE}/ml/analyze/ocr?user_id=demo` : '/api/ml/analyze/ocr?user_id=demo',
+        },
+      ];
 
-      if (!response.ok) {
-        setErrorMessage(data?.detail || 'OCR 분석에 실패했어요.');
-        return;
+      let lastErr = 'OCR 분석에 실패했어요.';
+
+      for (const c of candidates) {
+        try {
+          const response = await fetch(c.url, { method: 'POST', body: formData });
+          const rawText = await response.text().catch(() => '');
+          let data = {};
+          try {
+            data = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            data = {};
+          }
+
+          if (!response.ok) {
+            const msg =
+              String(data?.detail || data?.message || data?.error || '').trim() ||
+              (rawText ? String(rawText).trim().slice(0, 200) : '');
+
+            lastErr = msg
+              ? `OCR 분석에 실패했어요. (HTTP ${response.status}) ${msg}`
+              : `OCR 분석에 실패했어요. (HTTP ${response.status})`;
+
+            // 프록시/포트 문제 등으로 FastAPI가 실패하면 Flask로 폴백
+            if (response.status === 404 || response.status === 502 || response.status === 503 || response.status === 504) {
+              continue;
+            }
+            // 그 외 에러도 일단 다음 후보가 있으면 시도
+            continue;
+          }
+
+          // success (FastAPI: {detected_text: []}, Flask: {status:'success', detected_text:'...'})
+          const lines = _normalizeDetectedText(data);
+          setOcrLines(lines);
+          setInfoMessage(lines.length ? '텍스트를 추출했어요.' : '추출된 텍스트가 없어요.');
+          lastErr = '';
+          break;
+        } catch (e) {
+          console.warn(`ocr request failed (${c.label})`, e);
+          lastErr =
+            FASTAPI_BASE
+              ? '서버에 연결할 수 없어요. VITE_FASTAPI_BASE 주소/포트를 확인해주세요.'
+              : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI/Flask가 실행 중인지 확인해주세요.';
+          // 네트워크 실패도 다음 후보가 있으면 계속
+        }
       }
 
-      const lines = Array.isArray(data?.detected_text) ? data.detected_text : [];
-      setOcrLines(lines);
-      setInfoMessage(lines.length ? '텍스트를 추출했어요.' : '추출된 텍스트가 없어요.');
+      if (lastErr) {
+        setErrorMessage(lastErr);
+        return;
+      }
 
       setTimeout(() => {
         document.getElementById('image')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -686,7 +977,7 @@ const MainPage = () => {
 
             <nav className="hidden lg:flex lg:col-span-6 items-center justify-center gap-8 font-semibold text-slate-600 text-sm">
               <a href="#search" className="hover:text-slate-900 transition">의약품 검색</a>
-              <a href="#" className="hover:text-slate-900 transition">상호작용</a>
+              <a href="#interaction" className="hover:text-slate-900 transition">상호작용</a>
               <a href="#pharmacy" className="hover:text-slate-900 transition">약국 찾기</a>
               <a href="#about" className="hover:text-slate-900 transition">서비스 소개</a>
             </nav>
@@ -940,6 +1231,23 @@ const MainPage = () => {
                       <span className="bg-blue-50 text-blue-500 px-4 py-2 rounded-xl text-xs font-bold border border-blue-100">💤 졸음 유발</span>
                     </div>
                   </div>
+
+                  <div className="rounded-4xl border border-subtle bg-white p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-black text-slate-400 uppercase tracking-tighter">복용 관리</div>
+                        <div className="mt-1 text-sm font-black text-slate-900">현재 약을 복용 목록에 저장</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => addSavedMed(resultName || searchTerm)}
+                        className="px-4 py-2 rounded-3xl bg-slate-900 text-white font-semibold shadow-soft hover:opacity-95 transition"
+                      >
+                        + 복용 목록에 추가
+                      </button>
+                    </div>
+                    <div className="mt-3 text-xs text-slate-500">추가한 약들은 ‘상호작용’ 섹션에서 병용 금기를 확인할 수 있어요.</div>
+                  </div>
                 </div>
 
                 {/* 오른쪽: 효능 및 용법 */}
@@ -962,6 +1270,294 @@ const MainPage = () => {
           </div>
         </section>
       )}
+
+      {/* 2.5 상호작용(병용 금기) */}
+      <section id="interaction" className="py-14 md:py-16 px-6">
+        <div className="mx-auto max-w-7xl">
+          <div className="rounded-4xl p-8 md:p-12 border border-subtle surface apple-shadow">
+            <div className="mb-7 flex flex-col lg:flex-row lg:items-start lg:justify-between gap-5">
+              <div>
+                <div className="text-xs font-black text-slate-400 uppercase tracking-tighter">복용 안전</div>
+                <div className="mt-1 text-2xl md:text-3xl font-black text-slate-900 tracking-tight">상호작용 / 병용 금기</div>
+                <p className="mt-2 text-sm md:text-base text-slate-600 font-medium leading-relaxed">
+                  복용 중인 약을 저장하고, 함께 복용하면 안 되는 조합(병용 금기)을 빠르게 확인하세요.
+                </p>
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <span
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black bg-slate-50 text-slate-700 border border-subtle"
+                    title={durStatus.message || ''}
+                  >
+                    <span
+                      className={
+                        durStatus.available === true
+                          ? 'h-2 w-2 rounded-full bg-emerald-500'
+                          : durStatus.available === false
+                            ? 'h-2 w-2 rounded-full bg-rose-500'
+                            : 'h-2 w-2 rounded-full bg-slate-400'
+                      }
+                    />
+                    {durStatus.available === true
+                      ? 'DUR 사용 가능'
+                      : durStatus.available === false
+                        ? 'DUR 사용 불가'
+                        : 'DUR 상태'}
+                    {durStatus.source ? <span className="font-semibold opacity-60">{durStatus.source}</span> : null}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={fetchDurStatus}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black bg-white border border-subtle text-slate-700 hover:bg-slate-50 transition"
+                    title="상태 새로고침"
+                  >
+                    상태 새로고침
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => document.getElementById('search')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  className="hidden sm:inline-flex px-4 py-2.5 rounded-3xl border border-subtle bg-white font-semibold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  검색으로
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-4xl border border-subtle bg-white p-5 md:p-6">
+              <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+                <div className="flex-1">
+                  <div className="text-sm font-black text-slate-900">내 복용 목록</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {durStatus.checkedAt ? `상태 확인: ${new Date(durStatus.checkedAt).toLocaleString()}` : '상태 확인: -'}
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <div className="flex items-center gap-2 rounded-3xl border border-subtle bg-slate-50 px-3 py-2">
+                    <input
+                      value={durQuickAdd}
+                      onChange={(e) => setDurQuickAdd(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          addSavedMed(durQuickAdd);
+                          setDurQuickAdd('');
+                        }
+                      }}
+                      placeholder="약 이름 추가"
+                      className="bg-transparent outline-none text-sm font-semibold text-slate-800 placeholder:text-slate-400 w-56"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addSavedMed(durQuickAdd);
+                        setDurQuickAdd('');
+                      }}
+                      className="px-3 py-1.5 rounded-2xl bg-white border border-subtle text-xs font-black text-slate-700 hover:bg-slate-50 transition"
+                    >
+                      추가
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={runDurCheck}
+                    disabled={durLoading || savedMeds.length < 2}
+                    className="px-4 py-2.5 rounded-3xl bg-slate-900 text-white font-semibold shadow-soft hover:opacity-95 transition disabled:opacity-60"
+                    title={savedMeds.length < 2 ? '2개 이상 추가해야 해요' : '병용 금기 확인'}
+                  >
+                    {durLoading ? '확인 중…' : '병용 금기 확인'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearSavedMeds}
+                    className="px-4 py-2.5 rounded-3xl border border-subtle bg-white font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    전체 삭제
+                  </button>
+                </div>
+              </div>
+
+              {savedMeds.length === 0 ? (
+                <div className="mt-5 rounded-4xl border border-subtle bg-slate-50 p-5">
+                  <div className="text-sm font-black text-slate-900">복용 목록이 비어 있어요</div>
+                  <div className="mt-1 text-sm text-slate-600 font-medium leading-relaxed">
+                    검색 결과에서 추가하거나, 위 입력칸에 약 이름을 입력해 목록을 만들어보세요.
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {savedMeds.map((n) => (
+                    <div key={n} className="inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-slate-50 border border-subtle">
+                      <div className="text-sm font-semibold text-slate-800">{n}</div>
+                      <button
+                        type="button"
+                        onClick={() => removeSavedMed(n)}
+                        className="text-xs font-black text-slate-500 hover:text-slate-900"
+                        title="삭제"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {durError && (
+                <div className="mt-5 rounded-4xl border border-rose-200 bg-rose-50/60 p-5">
+                  <div className="text-sm font-black text-rose-800">확인할 수 없어요</div>
+                  <div className="mt-1 text-sm font-semibold text-rose-800 leading-relaxed">{durError}</div>
+                  {durStatus.available === false && (
+                    <div className="mt-3 text-xs text-red-700/80 font-semibold">
+                      팁: 백엔드의 [backend/.env](backend/.env)에서 `DUR_SERVICE_PATH`와 `ODCLOUD_SERVICE_KEY`를 확인해보세요.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Results */}
+              {!durLoading && !durError && savedMeds.length >= 2 && (
+                <div className="mt-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-black text-slate-900">검사 결과</div>
+                    <div className="text-xs font-black text-slate-500">
+                      {durResults.length > 0 ? `위험 조합 ${durResults.length}개` : '금기 조합 없음'}
+                    </div>
+                  </div>
+
+                  {durResults.length === 0 ? (
+                    <div className="mt-3 rounded-4xl border border-subtle bg-slate-50 p-5">
+                      <div className="text-sm font-black text-slate-900">특이 사항이 발견되지 않았어요</div>
+                      <div className="mt-1 text-sm text-slate-600 font-medium leading-relaxed">
+                        모든 상호작용을 완전히 보장하진 않아요. 불안하거나 증상이 있으면 의사/약사에게 상담해주세요.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-4xl border border-subtle overflow-hidden bg-white">
+                      {durResults.slice(0, 10).map((it, idx) => {
+                        const left = String(it?.left || '').trim();
+                        const right = String(it?.right || '').trim();
+                        const reason = String(it?.reason || '병용 금기(사유 정보 없음)').trim();
+                        const isLast = idx === Math.min(durResults.length, 10) - 1;
+
+                        return (
+                          <button
+                            key={`${idx}-${left}-${right}`}
+                            type="button"
+                            onClick={() => openDurSheet(it)}
+                            className={
+                              `w-full text-left px-4 py-3 hover:bg-slate-50/70 active:bg-slate-50 transition flex items-start gap-3 ` +
+                              (!isLast ? 'border-b border-subtle' : '')
+                            }
+                          >
+                            <div className="pt-0.5">
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-black bg-slate-100 text-slate-700 border border-subtle">
+                                주의
+                              </span>
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-black text-slate-900 truncate">{left} × {right}</div>
+                              <div className="mt-0.5 text-xs text-slate-500 font-semibold truncate">{reason}</div>
+                            </div>
+
+                            <div className="text-slate-400 font-black leading-none select-none">›</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {durResults.length > 10 && (
+                    <div className="mt-3 text-xs text-slate-500 font-semibold">
+                      결과가 많아 상위 10개만 표시했어요.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Bottom Sheet (Apple-like) */}
+              {durSheetMounted && (
+                <div className="fixed inset-0 z-[60]">
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    className={
+                      'absolute inset-0 backdrop-blur-sm transition-opacity duration-200 ease-out ' +
+                      (durSheetVisible ? 'opacity-100 bg-slate-900/25' : 'opacity-0 bg-slate-900/0')
+                    }
+                    onClick={closeDurSheet}
+                  />
+
+                  <div className="absolute inset-x-0 bottom-0">
+                    <div className="mx-auto max-w-2xl">
+                      <div
+                        className={
+                          'rounded-t-4xl border border-subtle bg-white shadow-[0_-20px_60px_rgba(15,23,42,0.14)] transform transition-transform duration-200 ease-out ' +
+                          (durSheetVisible ? 'translate-y-0' : 'translate-y-8')
+                        }
+                      >
+                        <div className="px-5 pt-4 pb-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-black bg-slate-100 text-slate-700 border border-subtle">
+                                  주의
+                                </span>
+                                <div className="text-sm font-black text-slate-900 truncate">
+                                  {String(durSelectedHit?.left || '').trim()} × {String(durSelectedHit?.right || '').trim()}
+                                </div>
+                              </div>
+                              <div className="mt-2 text-sm text-slate-700 font-semibold leading-relaxed">
+                                {String(durSelectedHit?.reason || '병용 금기(사유 정보 없음)').trim()}
+                              </div>
+                              {(durSelectedHit?.ingredientA || durSelectedHit?.ingredientB) && (
+                                <div className="mt-2 text-xs text-slate-500 font-semibold">
+                                  성분: {String(durSelectedHit?.ingredientA || '').trim()}
+                                  {durSelectedHit?.ingredientB ? ` / ${String(durSelectedHit?.ingredientB || '').trim()}` : ''}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={closeDurSheet}
+                              className="px-3 py-2 rounded-2xl border border-subtle bg-white text-xs font-black text-slate-700 hover:bg-slate-50 transition"
+                            >
+                              닫기
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="px-5 pb-5">
+                          <div className="rounded-4xl border border-subtle bg-slate-50 p-4">
+                            <details>
+                              <summary className="cursor-pointer text-xs font-black text-slate-600 hover:text-slate-900">
+                                세부 데이터
+                              </summary>
+                              <div className="mt-3 rounded-3xl bg-white border border-subtle p-3 text-xs text-slate-700 font-mono overflow-auto max-h-64">
+                                {JSON.stringify(durSelectedHit?.raw || durSelectedHit || {}, null, 2)}
+                              </div>
+                            </details>
+                          </div>
+
+                          <div className="mt-4 text-xs text-slate-500 font-semibold leading-relaxed">
+                            참고: 본 결과는 공개 데이터 기반의 참고 정보이며, 최종 판단은 의사/약사와 상의해주세요.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* 3. 이미지 식별 섹션 (Step 2 적용) */}
       <section id="image" className="py-14 md:py-16 px-6">
@@ -1085,11 +1681,29 @@ const MainPage = () => {
 
               {ocrLines.length > 0 && (
                 <div className="mt-4 rounded-4xl border border-subtle bg-white p-4">
-                  <div className="text-sm font-black text-slate-900">추출된 텍스트</div>
-                  <div className="mt-2 text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">
-                    {ocrLines.slice(0, 10).map((line, idx) => (
-                      <div key={`${idx}-${line}`}>{line}</div>
-                    ))}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-black text-slate-900">추출된 텍스트</div>
+                    <div className="text-[11px] font-semibold text-slate-500">클릭하면 의약품 검색으로 연결돼요</div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {ocrLines.slice(0, 10).map((line, idx) => {
+                      const t = String(line || '').trim();
+                      if (!t) return null;
+                      return (
+                        <button
+                          key={`${idx}-${t}`}
+                          type="button"
+                          onClick={() => {
+                            setSearchTerm(t);
+                            handleSearch(t);
+                          }}
+                          className="px-3 py-2 rounded-2xl border border-subtle bg-slate-50 text-sm font-semibold text-slate-700 hover:bg-white transition"
+                          title="클릭해서 이 텍스트로 검색"
+                        >
+                          {t}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1329,9 +1943,9 @@ const MainPage = () => {
             {pharmacyResults.length > 0 && (
               <div className="mt-6 grid md:grid-cols-2 gap-4">
                 {pharmacyResults.slice(0, 10).map((p, idx) => {
-                  const name = String(p?.name || '').trim();
-                  const address = String(p?.address || '').trim();
-                  const phone = String(p?.phone || '').trim();
+                  const name = String(p?.name ?? p?.place_name ?? p?.placeName ?? '').trim();
+                  const address = String(p?.address ?? p?.address_name ?? p?.addressName ?? '').trim();
+                  const phone = String(p?.phone ?? p?.tel ?? p?.phone_number ?? '').trim();
                   const distanceKm = typeof p?.distance_km === 'number' ? p.distance_km : null;
                   const mapQ = encodeURIComponent(address || name);
                   const mapUrl = `https://map.naver.com/v5/search/${mapQ}`;
@@ -1386,10 +2000,15 @@ const MainPage = () => {
             <div className="px-6 py-4 border-b border-subtle flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-sm font-black text-slate-900 truncate">
-                  {String(pharmacyMapTarget?.name || '약국').trim() || '약국'} 지도
+                  {String(
+                    pharmacyMapTarget?.name ?? pharmacyMapTarget?.place_name ?? pharmacyMapTarget?.placeName ?? '약국',
+                  ).trim() || '약국'}{' '}
+                  지도
                 </div>
                 <div className="text-xs text-slate-500 truncate">
-                  {String(pharmacyMapTarget?.address || '').trim()}
+                  {String(
+                    pharmacyMapTarget?.address ?? pharmacyMapTarget?.address_name ?? pharmacyMapTarget?.addressName ?? '',
+                  ).trim()}
                 </div>
               </div>
               <button

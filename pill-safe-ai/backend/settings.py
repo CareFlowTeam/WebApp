@@ -29,9 +29,9 @@ DB_PATH: str = _env_str("DB_PATH", default="mediclens.db")
 AZURE_VISION_KEY: str = _env_str("AZURE_VISION_KEY")
 AZURE_VISION_ENDPOINT: str = _env_str("AZURE_VISION_ENDPOINT")
 
-AZURE_SPEECH_KEY: str = _env_str("AZURE_SPEECH_KEY")
-AZURE_SPEECH_ENDPOINT: str = _env_str("AZURE_SPEECH_ENDPOINT")
-AZURE_SPEECH_REGION: str = _env_str("AZURE_SPEECH_REGION", default="koreacentral")
+AZURE_SPEECH_KEY: str = _env_str("AZURE_SPEECH_KEY") or _env_str("SPEECH_KEY")
+AZURE_SPEECH_ENDPOINT: str = _env_str("AZURE_SPEECH_ENDPOINT") or _env_str("SPEECH_ENDPOINT")
+AZURE_SPEECH_REGION: str = _env_str("AZURE_SPEECH_REGION", default="") or _env_str("SPEECH_REGION", default="koreacentral")
 
 # ODCloud(OpenAPI) - pharmacy finder, DUR, etc.
 ODCLOUD_API_BASE: str = _env_str("ODCLOUD_API_BASE", default="https://api.odcloud.kr/api")
@@ -41,3 +41,7 @@ ODCLOUD_AUTHORIZATION: str = _env_str("ODCLOUD_AUTHORIZATION")
 # Pharmacy dataset (api.odcloud.kr): set the dataset path you want to query.
 # Example: /{api_id}/v1/uddi:{uuid}
 PHARMACY_SERVICE_PATH: str = _env_str("PHARMACY_SERVICE_PATH")
+
+# DUR dataset (api.odcloud.kr) for 병용금기
+# Example: /15089525/v1/uddi:3f2efdac-942b-494e-919f-8bdc583f65ea
+DUR_SERVICE_PATH: str = _env_str("DUR_SERVICE_PATH")
