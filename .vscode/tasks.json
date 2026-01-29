@@ -7,14 +7,14 @@
 			"command": "cmd",
 			"args": [
 				"/c",
-				"cd /d C:\\dev\\pill-safe-ai\\backend && C:\\dev\\pill-safe-ai\\.venv\\Scripts\\python.exe app.py"
+				"cd /d \"${workspaceFolder}\\backend\" && \"${workspaceFolder}\\.venv\\Scripts\\python.exe\" app.py"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
 			"group": "build"
 		},
 		{
-			"label": "Backend: Flask (5000)",
+			"label": "Backend: Flask (5000) (pwsh)",
 			"type": "shell",
 			"command": "pwsh",
 			"args": [
@@ -22,22 +22,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai\\backend; & C:\\dev\\pill-safe-ai\\.venv\\Scripts\\python.exe app.py"
-			],
-			"isBackground": true,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "Backend: Flask (5000)",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai\\backend; & C:\\dev\\pill-safe-ai\\.venv\\Scripts\\python.exe app.py"
+				"Set-Location -Path \"${workspaceFolder}\\backend\"; & \"${workspaceFolder}\\.venv\\Scripts\\python.exe\" app.py"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
@@ -52,7 +37,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai; & C:\\dev\\pill-safe-ai\\.venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload --port 8000"
+				"Set-Location -Path \"${workspaceFolder}\"; & \"${workspaceFolder}\\.venv\\Scripts\\python.exe\" -m uvicorn backend.main:app --reload --port 8000"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
@@ -67,22 +52,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai\\frontend; npm run dev -- --host --port 5173"
-			],
-			"isBackground": true,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "Frontend: Vite Dev (5173)",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai\\frontend; npm run dev -- --host --port 5173"
+				"Set-Location -Path \"${workspaceFolder}\\frontend\"; npm run dev -- --host --port 5173"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
@@ -97,22 +67,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai; & C:\\dev\\pill-safe-ai\\.venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload --port 8001"
-			],
-			"isBackground": true,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "Frontend: Vite Dev (5173)",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-Command",
-				"Set-Location -Path C:\\dev\\pill-safe-ai\\frontend; npm run dev -- --host --port 5173"
+				"Set-Location -Path \"${workspaceFolder}\"; & \"${workspaceFolder}\\.venv\\Scripts\\python.exe\" -m uvicorn backend.main:app --reload --port 8001"
 			],
 			"isBackground": true,
 			"problemMatcher": [],

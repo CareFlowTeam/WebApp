@@ -7,6 +7,7 @@ export default defineConfig({
   // tailwindcss 플러그인을 유지해야 디자인이 깨지지 않습니다.
   plugins: [react(), tailwindcss()],
   server: {
+    host: true,
     strictPort: true,
     proxy: {
       // 1. Flask 검색 서버 (수정된 부분)

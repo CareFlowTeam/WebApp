@@ -7,6 +7,11 @@ import sqlite3
 import asyncio
 import time
 
+try:
+    from dur_service import DurService, DurServiceError
+except Exception:  # pragma: no cover
+    from .dur_service import DurService, DurServiceError
+
 # Azure SDKs
 import azure.cognitiveservices.speech as speechsdk
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
@@ -69,6 +74,15 @@ class UserProfile(BaseModel):
     has_liver_disease: bool = False
     has_kidney_disease: bool = False
     has_allergy: bool = False 
+
+
+class DurDrug(BaseModel):
+    name: str
+    code: Optional[str] = None
+
+
+class DurCheckRequest(BaseModel):
+    drugs: List[DurDrug] = Field(default_factory=list)
     
 # --- [핵심 유틸리티 함수] ---
 
@@ -136,6 +150,33 @@ async def analyze_ocr(user_id: str, file: UploadFile = File(...)):
         lines = [line.text for text_result in result.analyze_result.read_results for line in text_result.lines]
         os.remove(temp_path)
         return {"user_id": user_id, "detected_text": lines}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dur/status")
+async def dur_status():
+    svc = DurService()
+    return {
+        "status": "success",
+        "available": bool(svc.is_configured()),
+        "configured": bool(svc.is_configured()),
+    }
+
+
+@app.post("/dur/check")
+async def dur_check(req: DurCheckRequest):
+    svc = DurService()
+    try:
+        drugs = [d.name for d in (req.drugs or []) if str(d.name or "").strip()]
+        hits = svc.check_pairs(drugs)
+        return {
+            "status": "success",
+            "available": True,
+            "data": [h.to_dict() for h in hits],
+        }
+    except DurServiceError as e:
+        raise HTTPException(status_code=503, detail={"code": e.code, "message": e.public_message})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
