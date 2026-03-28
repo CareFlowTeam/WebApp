@@ -1,193 +1,188 @@
-
-
-import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+import tempfile
+from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import List, Optional
-import sqlite3
-import asyncio
-import time
+from typing import Any, Optional
+
+BACKEND_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = BACKEND_DIR / "scripts"
+CHECKPOINT_PATH = SCRIPTS_DIR / "best_model.pt"
+
+# backend 폴더를 import 루트로 고정
+sys.path.insert(0, str(BACKEND_DIR))
+
+# 로컬 모듈 임포트
+from scripts.predict_convnext import predict_single_image
+from pharmacy_routes import router as pharmacy_router
+from info_service import PillInfoService
+from pharmacy_service import PharmacyService, PharmacyServiceError
+from dur_service import DurService, DurServiceError
+from settings import (
+    CORS_ALLOWED_ORIGINS,
+    ODCLOUD_AUTHORIZATION,
+    ODCLOUD_SERVICE_KEY,
+    PHARMACY_LOCAL_CSV,
+    PHARMACY_SERVICE_PATH,
+)
+
+# OCR / Azure SDKs
 try:
-    from pharmacy_routes import router as pharmacy_router
-except Exception:
-    from .pharmacy_routes import router as pharmacy_router
+    import easyocr
+except ImportError:
+    easyocr = None
 
 try:
-    from dur_service import DurService, DurServiceError
-except Exception:  # pragma: no cover
-    from .dur_service import DurService, DurServiceError
+    from PIL import Image
+except ImportError:
+    Image = None
 
-# Azure SDKs (optional: server should run without them for non-Azure features like DUR)
-try:  # pragma: no cover
+try:
     import azure.cognitiveservices.speech as speechsdk
-    from azure.cognitiveservices.vision.computervision import ComputerVisionClient
-    from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
     from msrest.authentication import CognitiveServicesCredentials
-except Exception:  # pragma: no cover
+except ImportError:
     speechsdk = None
-    ComputerVisionClient = None
-    OperationStatusCodes = None
     CognitiveServicesCredentials = None
+
+
+_ocr_reader: Any = None
+info_service = PillInfoService()
+pharmacy_service = PharmacyService()
+
+
+def ensure_pillow_antialias_compat() -> None:
+    if Image is None or hasattr(Image, "ANTIALIAS"):
+        return
+
+    if hasattr(Image, "Resampling") and hasattr(Image.Resampling, "LANCZOS"):
+        resample_value = int(Image.Resampling.LANCZOS)
+    elif hasattr(Image, "LANCZOS"):
+        resample_value = int(getattr(Image, "LANCZOS"))
+    else:
+        resample_value = 1
+
+    setattr(Image, "ANTIALIAS", resample_value)
+
+
+def get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        if easyocr is None:
+            raise RuntimeError("easyocr is not installed. Install it in the backend environment first.")
+        ensure_pillow_antialias_compat()
+        _ocr_reader = easyocr.Reader(["ko", "en"], gpu=False)
+    return _ocr_reader
 
 app = FastAPI(title="MedicLens Backend")
 
-# CORS 설정 (기존에 있을 수도 있음)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite/React 기본 포트
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
 
-app.include_router(pharmacy_router)  # 이 줄 추가
+app.include_router(pharmacy_router)
 
-# --- [환경 변수 및 설정] ---
-try:
-    from settings import (
-        AZURE_SPEECH_KEY,
-        AZURE_SPEECH_ENDPOINT,
-        AZURE_SPEECH_REGION,
-        AZURE_VISION_ENDPOINT,
-        AZURE_VISION_KEY,
-        DB_PATH,
+
+def pharmacy_status_payload() -> dict[str, Any]:
+    available = bool(pharmacy_service.is_configured())
+    missing: list[str] = []
+
+    local_csv = str(PHARMACY_LOCAL_CSV or "").strip()
+    if not local_csv:
+        if not str(PHARMACY_SERVICE_PATH or "").strip():
+            missing.append("PHARMACY_LOCAL_CSV(or PHARMACY_SERVICE_PATH)")
+        if not (str(ODCLOUD_SERVICE_KEY or "").strip() or str(ODCLOUD_AUTHORIZATION or "").strip()):
+            missing.append("ODCLOUD_SERVICE_KEY(or ODCLOUD_AUTHORIZATION)")
+
+    hint = ""
+    if not available:
+        hint = (
+            "약국 찾기 설정이 필요해요. 기본 제공 CSV(backend/data/pharmacies_seoul_utf8.csv)가 없으면 "
+            "backend/.env에 PHARMACY_LOCAL_CSV(로컬 CSV 경로) 또는 PHARMACY_SERVICE_PATH(ODCloud 데이터셋 경로)와 "
+            "ODCLOUD_SERVICE_KEY(또는 ODCLOUD_AUTHORIZATION)를 설정해주세요."
+        )
+
+    return {
+        "status": "success",
+        "available": available,
+        "configured": available,
+        "missing": missing,
+        "hint": hint,
+    }
+
+
+def perform_pharmacy_search(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    q = str(payload.get("q", "") or "").strip()
+    limit = int(payload.get("limit", 10))
+    sort = str(payload.get("sort", "relevance") or "relevance").strip()
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    radius_km = payload.get("radius_km")
+    include_closed = bool(payload.get("include_closed", False))
+
+    lat = float(lat) if lat not in (None, "") else None
+    lon = float(lon) if lon not in (None, "") else None
+    radius_km = float(radius_km) if radius_km not in (None, "") else None
+
+    items = pharmacy_service.search(
+        q=q,
+        limit=limit,
+        lat=lat,
+        lon=lon,
+        radius_km=radius_km,
+        sort=sort,
+        include_closed=include_closed,
     )
-except Exception:  # pragma: no cover
-    from .settings import (
-        AZURE_SPEECH_KEY,
-        AZURE_SPEECH_ENDPOINT,
-        AZURE_SPEECH_REGION,
-        AZURE_VISION_ENDPOINT,
-        AZURE_VISION_KEY,
-        DB_PATH,
-    )
-
-# 완벽한 남/여 목소리 설정
-VOICE_PRESETS = {
-    "female": "ko-KR-SunHiNeural", # 맑고 신뢰감 있는 여성 음성
-    "male": "ko-KR-InJoonNeural"   # 차분하고 전문적인 남성 음성
-}
-
-# --- [DB 초기화 및 관리] ---
-def init_db():
-    """앱 시작 시 SQLite 테이블을 초기화합니다."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        # 방법 B: 각 항목을 별도 컬럼으로 저장(INTEGER 0/1 사용)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS user_profiles (
-                user_id TEXT PRIMARY KEY,
-                age INTEGER DEFAULT 30,
-                gender TEXT DEFAULT 'female',
-                is_pregnant INTEGER DEFAULT 0,
-                has_liver_disease INTEGER DEFAULT 0,
-                has_kidney_disease INTEGER DEFAULT 0,
-                has_allergy INTEGER DEFAULT 0
-            )
-        """)
-        conn.commit()
-
-init_db()
-
-# --- [데이터 모델(Validation)] ---
-class UserProfile(BaseModel):
-    user_id: str
-    age: int = Field(30, ge=0, le=120)
-    gender: str = "female" # female or male
-    is_pregnant: bool = False
-    has_liver_disease: bool = False
-    has_kidney_disease: bool = False
-    has_allergy: bool = False 
+    return [item.to_dict() for item in items]
 
 
-class DurDrug(BaseModel):
-    name: str
-    code: Optional[str] = None
-
-
-class DurCheckRequest(BaseModel):
-    drugs: List[DurDrug] = Field(default_factory=list)
-    
-# --- [핵심 유틸리티 함수] ---
-
-async def get_db_profile(user_id: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-    return dict(row) if row else None
-
-# --- [API 엔드포인트] ---
-
-@app.post("/user/profile")
-async def save_profile(profile: UserProfile):
-    """사용자가 햄버거 메뉴에서 설정한 정보를 DB에 저장(UPDATE 포함)"""
+@app.get("/search")
+async def search_pill(name: Optional[str] = None):
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            # 9단계: UPDATE or INSERT (SQLite의 REPLACE 문법 사용)
-            cursor.execute("""
-                INSERT OR REPLACE INTO user_profiles
-                (user_id, age, gender, is_pregnant, has_liver_disease, has_kidney_disease, has_allergy)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                profile.user_id,
-                profile.age,
-                profile.gender,
-                1 if profile.is_pregnant else 0,
-                1 if profile.has_liver_disease else 0,
-                1 if profile.has_kidney_disease else 0,
-                1 if profile.has_allergy else 0
-            ))
-            conn.commit()
-        return {"status": "ok", "message": "설정이 안전하게 저장되었습니다."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/analyze/ocr")
-async def analyze_ocr(user_id: str, file: UploadFile = File(...)):
-    """Azure Vision API를 이용한 약 봉투/처방전 텍스트 추출"""
+        result = info_service.search_and_announce(name)
+        if result:
+            return {"status": "success", "data": result}
+        raise HTTPException(status_code=404, detail={"status": "fail", "message": "해당하는 약 정보를 찾을 수 없습니다."})
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail={"status": "error", "message": "데이터를 처리하는 중 오류가 발생했습니다."})
+
+
+@app.get("/health")
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "fastapi"}
+
+
+@app.get("/pharmacies/status")
+@app.get("/api/pharmacies/status")
+async def pharmacies_status():
+    return pharmacy_status_payload()
+
+
+@app.post("/api/pharmacy/search")
+async def pharmacy_search_compat(request: Request):
     try:
-        if not (ComputerVisionClient and CognitiveServicesCredentials):
-            raise HTTPException(
-                status_code=503,
-                detail="Azure Vision SDK is not installed. Install azure-cognitiveservices-vision-computervision and msrest.",
-            )
-        if not AZURE_VISION_KEY or not AZURE_VISION_ENDPOINT:
-            raise HTTPException(
-                status_code=500,
-                detail="Azure Vision is not configured. Set AZURE_VISION_KEY and AZURE_VISION_ENDPOINT.",
-            )
-        client = ComputerVisionClient(AZURE_VISION_ENDPOINT, CognitiveServicesCredentials(AZURE_VISION_KEY))
-        image_data = await file.read()
-        
-        # 임시 파일 저장 및 처리
-        temp_path = f"temp_{user_id}.jpg"
-        with open(temp_path, "wb") as f:
-            f.write(image_data)
-            
-        with open(temp_path, "rb") as f:
-            read_response = client.read_in_stream(f, raw=True)
-            
-        operation_id = read_response.headers["Operation-Location"].split("/")[-1]
-        while True:
-            result = client.get_read_result(operation_id)
-            if result.status not in ['notStarted', 'running']: break
-            time.sleep(1)
-            
-        lines = [line.text for text_result in result.analyze_result.read_results for line in text_result.lines]
-        os.remove(temp_path)
-        return {"user_id": user_id, "detected_text": lines}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        payload = await request.json()
+        return perform_pharmacy_search(payload)
+    except PharmacyServiceError as e:
+        raise HTTPException(status_code=503, detail={"code": e.code, "message": e.public_message})
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"code": "PHARMACY_BAD_REQUEST", "message": "요청 파라미터 형식이 올바르지 않아요."})
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail={"message": "약국 정보를 불러오지 못했어요."})
 
 
 @app.get("/dur/status")
+@app.get("/ml/dur/status")
 async def dur_status():
     svc = DurService()
     return {
@@ -197,90 +192,75 @@ async def dur_status():
     }
 
 
-# Frontend default paths (when VITE_FASTAPI_BASE is empty) use the /ml prefix.
-@app.get("/ml/dur/status")
-async def dur_status_ml():
-    return await dur_status()
-
-
 @app.post("/dur/check")
-async def dur_check(req: DurCheckRequest):
+@app.post("/ml/dur/check")
+async def dur_check(request: Request):
     svc = DurService()
     try:
-        drugs = [d.name for d in (req.drugs or []) if str(d.name or "").strip()]
-        hits = svc.check_pairs(drugs)
+        payload = await request.json()
+        drugs = payload.get("drugs", []) if isinstance(payload, dict) else []
+        names = [str(item.get("name", "") or "").strip() for item in drugs if isinstance(item, dict)]
+        names = [name for name in names if name]
+        hits = svc.check_pairs(names)
         return {
             "status": "success",
             "available": True,
-            "data": [h.to_dict() for h in hits],
+            "data": [hit.to_dict() for hit in hits],
         }
     except DurServiceError as e:
         raise HTTPException(status_code=503, detail={"code": e.code, "message": e.public_message})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/ml/dur/check")
-async def dur_check_ml(req: DurCheckRequest):
-    return await dur_check(req)
-    
-@app.post("/tts")
-async def text_to_speech(user_id: str, text: str):
-    """사용자 성별에 맞춰 완벽한 목소리로 음성 합성"""
-    text = (text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="text is required")
-
-    if not speechsdk:
-        raise HTTPException(
-            status_code=503,
-            detail="Azure Speech SDK is not installed. Install azure-cognitiveservices-speech.",
-        )
-
-    profile = await get_db_profile(user_id)
-    gender = profile.get("gender", "female") if profile else "female"    
-    voice_name = VOICE_PRESETS.get(gender, VOICE_PRESETS["female"])
-    
-    if not AZURE_SPEECH_KEY or (not AZURE_SPEECH_REGION and not AZURE_SPEECH_ENDPOINT):
-        raise HTTPException(
-            status_code=500,
-            detail="Azure Speech is not configured. Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION (or AZURE_SPEECH_ENDPOINT).",
-        )
-
-    speech_config = speechsdk.SpeechConfig(
-        subscription=AZURE_SPEECH_KEY,
-        region=AZURE_SPEECH_REGION or None,
-        endpoint=AZURE_SPEECH_ENDPOINT or None,
-    )
-    speech_config.speech_synthesis_voice_name = voice_name
-    # Ensure we actually emit MP3 bytes when we return audio/mpeg
+# --- [API 엔드포인트: 이미지 분석] ---
+@app.post("/analyze/pill-image")
+@app.post("/ml/analyze/pill-image")
+async def analyze_pill_image(file: UploadFile = File(...)):
     try:
-        speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+        # 임시 파일 저장
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_img:
+            img_bytes = await file.read()
+            temp_img.write(img_bytes)
+            temp_img_path = Path(temp_img.name)
+
+        # 예측 로직 (함수 내부로 통합)
+        result = predict_single_image(
+            image_path=temp_img_path,
+            checkpoint_path=CHECKPOINT_PATH,
+            device="cpu",
+            top_k=5,
         )
-    except Exception:
-        pass
-    
-    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-    
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: synthesizer.speak_text_async(text).get())
-    
-    if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-        return Response(content=result.audio_data, media_type="audio/mpeg")
 
-    # Provide actionable diagnostics when synthesis fails.
-    if result.reason == speechsdk.ResultReason.Canceled:
-        try:
-            details = speechsdk.SpeechSynthesisCancellationDetails(result)
-            detail_text = f"TTS canceled: reason={details.reason}"
-            if getattr(details, "error_details", None):
-                detail_text += f" error_details={details.error_details}"
-            raise HTTPException(status_code=500, detail=detail_text)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"TTS canceled (details unavailable): {e}")
+        temp_img_path.unlink(missing_ok=True)
+        return {"result": result}
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print("[예측 실패]", tb)
+        raise HTTPException(status_code=500, detail=f"{str(e)}\n{tb}")
 
-    raise HTTPException(status_code=500, detail=f"TTS failed: reason={result.reason}")
+
+@app.post("/analyze/ocr")
+@app.post("/ml/analyze/ocr")
+async def analyze_ocr(user_id: str = "demo", file: UploadFile = File(...)):
+    del user_id
+    temp_img_path: Optional[Path] = None
+    try:
+        suffix = Path(file.filename or "upload.jpg").suffix or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_img:
+            temp_img.write(await file.read())
+            temp_img_path = Path(temp_img.name)
+
+        reader = get_ocr_reader()
+        lines = [str(text).strip() for text in reader.readtext(str(temp_img_path), detail=0, paragraph=False) if str(text).strip()]
+        return {"status": "success", "provider": "easyocr", "detected_text": lines}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR 분석 중 오류가 발생했습니다: {e}")
+    finally:
+        if temp_img_path is not None:
+            temp_img_path.unlink(missing_ok=True)
+
+# ... (이후 save_profile, analyze_ocr, tts 등 나머지 엔드포인트 작성)
 
 if __name__ == "__main__":
     import uvicorn

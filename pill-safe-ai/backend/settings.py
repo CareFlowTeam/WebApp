@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Iterable
 
 from dotenv import load_dotenv
 
@@ -22,6 +23,23 @@ def _env_str(name: str, default: str | None = None) -> str:
     if len(value) >= 2 and ((value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'")):
         value = value[1:-1].strip()
     return value
+
+
+def _split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def _unique(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 DB_PATH: str = _env_str("DB_PATH", default="mediclens.db")
@@ -50,3 +68,8 @@ PHARMACY_LOCAL_CSV: str = _env_str("PHARMACY_LOCAL_CSV")
 # DUR dataset (api.odcloud.kr) for 병용금기
 # Example: /15089525/v1/uddi:3f2efdac-942b-494e-919f-8bdc583f65ea
 DUR_SERVICE_PATH: str = _env_str("DUR_SERVICE_PATH")
+
+CORS_ALLOWED_ORIGINS: list[str] = _unique(
+    _split_csv(_env_str("CORS_ALLOWED_ORIGINS"))
+    or ["http://localhost:5173", "http://localhost:3000"]
+)

@@ -1,0 +1,16 @@
+.git
+.github
+.vscode
+.venv
+.venv-gpu
+node_modules
+frontend/node_modules
+frontend/dist
+backend/__pycache__
+backend/scripts/__pycache__
+backend/rag_agent/__pycache__
+wandb
+checkpoints
+*.log
+*.pyc
+*.pyo

@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: pill-safe-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: AZURE_VISION_KEY
+        sync: false
+      - key: AZURE_VISION_ENDPOINT
+        sync: false
+      - key: AZURE_SPEECH_KEY
+        sync: false
+      - key: AZURE_SPEECH_REGION
+        sync: false
+      - key: ODCLOUD_SERVICE_KEY
+        sync: false
+      - key: ODCLOUD_AUTHORIZATION
+        sync: false
+      - key: PHARMACY_LOCAL_CSV
+        sync: false
+      - key: PHARMACY_SERVICE_PATH
+        sync: false
+      - key: DUR_SERVICE_PATH
+        sync: false
+  - type: web
+    name: pill-safe-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: VITE_FLASK_BASE
+        value: https://pill-safe-api.onrender.com
+      - key: VITE_FASTAPI_BASE
+        value: https://pill-safe-api.onrender.com
