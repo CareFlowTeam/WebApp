@@ -10,15 +10,15 @@ export default defineConfig({
     host: true,
     strictPort: true,
     proxy: {
-      // 1. Flask 검색 서버 (수정된 부분)
+      // 1. FastAPI 통합 백엔드
       '/api': {
-        target: 'http://127.0.0.1:5000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
-        // rewrite는 기존대로 유지하여 /api를 제거하고 Flask에 전달합니다.
+        // /api/search -> /search, /api/pharmacies/status -> /pharmacies/status
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
-      // 2. FastAPI 서버 (기존 설정 유지)
+      // 2. FastAPI 별도 네임스페이스 유지
       '/ml': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,

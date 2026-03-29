@@ -562,7 +562,8 @@ const MainPage = () => {
   // --- 함수 (Functions) ---
   // 텍스트 검색 처리
   const handleSearch = async (termOverride) => {
-    const term = (termOverride ?? searchTerm).trim();
+    const rawTerm = termOverride ?? searchTerm;
+    const term = typeof rawTerm === 'string' ? rawTerm.trim() : '';
     setErrorMessage('');
     setInfoMessage('');
     setLoading(true);
