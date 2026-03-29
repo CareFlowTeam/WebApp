@@ -60,7 +60,7 @@ const MainPage = () => {
         payload.lon = geo.lon;
         payload.radius_km = radiusKm;
       }
-      const resp = await fetch('/api/pharmacy/search', {
+      const resp = await fetch(apiUrl('/api/pharmacy/search'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -81,7 +81,11 @@ const MainPage = () => {
       setInfoMessage(data.length ? '약국 검색 결과를 불러왔어요.' : '검색 결과가 없습니다.');
     } catch (e) {
       setPharmacyResults([]);
-      setPharmacyError('서버에 연결할 수 없어요. Vite 개발 서버와 Flask(5000)가 모두 실행 중인지 확인해주세요.');
+      setPharmacyError(
+        API_BASE
+          ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
+          : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.',
+      );
     } finally {
       setPharmacyLoading(false);
     }
@@ -222,6 +226,10 @@ const MainPage = () => {
 
   const FLASK_BASE = String(import.meta?.env?.VITE_FLASK_BASE || '').trim().replace(/\/$/, '');
   const FASTAPI_BASE = String(import.meta?.env?.VITE_FASTAPI_BASE || '').trim().replace(/\/$/, '');
+  const DEFAULT_RENDER_API_BASE = 'https://pill-safe-api.onrender.com';
+  const isLocalHost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const API_BASE = FASTAPI_BASE || FLASK_BASE || (isLocalHost ? '' : DEFAULT_RENDER_API_BASE);
+  const apiUrl = (path) => (API_BASE ? `${API_BASE}${path}` : path);
 
   // 복용 약 localStorage sync
   useEffect(() => {
@@ -283,17 +291,7 @@ const MainPage = () => {
     setDurLoading(true);
     try {
       const payload = { drugs: savedMeds.map((n) => ({ name: n })) };
-      const candidates = [
-        {
-          label: 'fastapi',
-          url: FASTAPI_BASE ? `${FASTAPI_BASE}/dur/check` : '/ml/dur/check',
-        },
-        {
-          label: 'flask',
-          // Flask fallback (when only Flask 5000 is running)
-          url: FLASK_BASE ? `${FLASK_BASE}/ml/dur/check` : '/api/ml/dur/check',
-        },
-      ];
+      const candidates = [{ label: 'backend', url: apiUrl('/api/dur/check') }];
 
       let lastErr = '';
       let items = [];
@@ -341,7 +339,9 @@ const MainPage = () => {
           break;
         } catch (e) {
           console.warn(`dur check request failed (${c.label})`, e);
-          lastErr = '서버에 연결할 수 없어요. 백엔드(FastAPI/Flask)가 실행 중인지 확인해주세요.';
+          lastErr = API_BASE
+            ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
+            : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.';
         }
       }
 
@@ -357,23 +357,18 @@ const MainPage = () => {
       }, 0);
     } catch (e) {
       console.error(e);
-      setDurError('서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.');
+      setDurError(
+        API_BASE
+          ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
+          : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.',
+      );
     } finally {
       setDurLoading(false);
     }
   };
 
   const fetchDurStatus = async () => {
-    const candidates = [
-      {
-        label: 'fastapi',
-        url: FASTAPI_BASE ? `${FASTAPI_BASE}/dur/status` : '/ml/dur/status',
-      },
-      {
-        label: 'flask',
-        url: FLASK_BASE ? `${FLASK_BASE}/ml/dur/status` : '/api/ml/dur/status',
-      },
-    ];
+    const candidates = [{ label: 'backend', url: apiUrl('/api/dur/status') }];
 
     for (const c of candidates) {
       try {
@@ -575,10 +570,7 @@ const MainPage = () => {
         return;
       }
 
-      // Flask: GET /search?name=...
-      const url = FLASK_BASE
-        ? `${FLASK_BASE}/search?name=${encodeURIComponent(term)}`
-        : `/api/search?name=${encodeURIComponent(term)}`;
+      const url = apiUrl(`/api/search?name=${encodeURIComponent(term)}`);
 
       const response = await fetch(url);
       const data = await response.json().catch(() => ({}));
@@ -606,9 +598,9 @@ const MainPage = () => {
       setResults([]);
       setInfoCards([]);
       setErrorMessage(
-        FLASK_BASE
-          ? '서버에 연결할 수 없어요. VITE_FLASK_BASE 주소/포트를 확인해주세요.'
-          : '서버에 연결할 수 없어요. Vite 개발 서버와 Flask(5000)가 모두 실행 중인지 확인해주세요.',
+        API_BASE
+          ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
+          : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.',
       );
     } finally {
       setLoading(false);
@@ -924,17 +916,7 @@ const MainPage = () => {
         return [];
       };
 
-      const candidates = [
-        {
-          label: 'fastapi',
-          url: FASTAPI_BASE ? `${FASTAPI_BASE}/analyze/ocr?user_id=demo` : '/ml/analyze/ocr?user_id=demo',
-        },
-        {
-          label: 'flask',
-          // Flask: POST /ml/analyze/ocr
-          url: FLASK_BASE ? `${FLASK_BASE}/ml/analyze/ocr?user_id=demo` : '/api/ml/analyze/ocr?user_id=demo',
-        },
-      ];
+      const candidates = [{ label: 'backend', url: apiUrl('/api/analyze/ocr?user_id=demo') }];
 
       let lastErr = 'OCR 분석에 실패했어요.';
 
@@ -974,10 +956,9 @@ const MainPage = () => {
           break;
         } catch (e) {
           console.warn(`ocr request failed (${c.label})`, e);
-          lastErr =
-            FASTAPI_BASE
-              ? '서버에 연결할 수 없어요. VITE_FASTAPI_BASE 주소/포트를 확인해주세요.'
-              : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI/Flask가 실행 중인지 확인해주세요.';
+          lastErr = API_BASE
+            ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
+            : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.';
           // 네트워크 실패도 다음 후보가 있으면 계속
         }
       }
@@ -993,8 +974,8 @@ const MainPage = () => {
     } catch (error) {
       console.error(error);
       setErrorMessage(
-        FASTAPI_BASE
-          ? '서버에 연결할 수 없어요. VITE_FASTAPI_BASE 주소/포트를 확인해주세요.'
+        API_BASE
+          ? '서버에 연결할 수 없어요. 백엔드 주소와 Render 배포 상태를 확인해주세요.'
           : '서버에 연결할 수 없어요. Vite 개발 서버와 FastAPI가 실행 중인지 확인해주세요.',
       );
     } finally {

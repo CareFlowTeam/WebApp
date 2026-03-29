@@ -142,6 +142,7 @@ def perform_pharmacy_search(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 @app.get("/search")
+@app.get("/api/search")
 async def search_pill(name: Optional[str] = None):
     try:
         result = info_service.search_and_announce(name)
@@ -166,6 +167,7 @@ async def pharmacies_status():
     return pharmacy_status_payload()
 
 
+@app.post("/pharmacy/search")
 @app.post("/api/pharmacy/search")
 async def pharmacy_search_compat(request: Request):
     try:
@@ -182,7 +184,9 @@ async def pharmacy_search_compat(request: Request):
 
 
 @app.get("/dur/status")
+@app.get("/api/dur/status")
 @app.get("/ml/dur/status")
+@app.get("/api/ml/dur/status")
 async def dur_status():
     svc = DurService()
     return {
@@ -193,7 +197,9 @@ async def dur_status():
 
 
 @app.post("/dur/check")
+@app.post("/api/dur/check")
 @app.post("/ml/dur/check")
+@app.post("/api/ml/dur/check")
 async def dur_check(request: Request):
     svc = DurService()
     try:
@@ -214,7 +220,9 @@ async def dur_check(request: Request):
 
 # --- [API 엔드포인트: 이미지 분석] ---
 @app.post("/analyze/pill-image")
+@app.post("/api/analyze/pill-image")
 @app.post("/ml/analyze/pill-image")
+@app.post("/api/ml/analyze/pill-image")
 async def analyze_pill_image(file: UploadFile = File(...)):
     try:
         # 임시 파일 저장
@@ -241,7 +249,9 @@ async def analyze_pill_image(file: UploadFile = File(...)):
 
 
 @app.post("/analyze/ocr")
+@app.post("/api/analyze/ocr")
 @app.post("/ml/analyze/ocr")
+@app.post("/api/ml/analyze/ocr")
 async def analyze_ocr(user_id: str = "demo", file: UploadFile = File(...)):
     del user_id
     temp_img_path: Optional[Path] = None
