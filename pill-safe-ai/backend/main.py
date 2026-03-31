@@ -21,7 +21,13 @@ from info_service import PillInfoService
 from pharmacy_service import PharmacyService, PharmacyServiceError
 from dur_service import DurService, DurServiceError
 from settings import (
+    AZURE_SPEECH_ENDPOINT,
+    AZURE_SPEECH_KEY,
+    AZURE_SPEECH_REGION,
+    AZURE_VISION_ENDPOINT,
+    AZURE_VISION_KEY,
     CORS_ALLOWED_ORIGINS,
+    DUR_SERVICE_PATH,
     ODCLOUD_AUTHORIZATION,
     ODCLOUD_SERVICE_KEY,
     PHARMACY_LOCAL_CSV,
@@ -92,7 +98,7 @@ app.include_router(pharmacy_router)
 async def log_startup_diagnostics() -> None:
     route_paths = sorted(
         {
-            route.path
+            str(getattr(route, "path", ""))
             for route in app.routes
             if getattr(route, "path", None)
         }
@@ -112,6 +118,48 @@ async def log_startup_diagnostics() -> None:
     print(f"STARTUP_FILE: {__file__}")
     print(f"STARTUP_IMPORT_ROOT: {BACKEND_DIR}")
     print(f"STARTUP_ROUTES: {', '.join(active_paths)}")
+
+
+def config_status_payload() -> dict[str, Any]:
+    dur_service = DurService()
+    pharmacy_available = bool(pharmacy_service.is_configured())
+    dur_available = bool(dur_service.is_configured())
+
+    return {
+        "status": "success",
+        "runtime": {
+            "backend_file": str(BACKEND_DIR / "main.py"),
+            "ocr_provider": "easyocr",
+            "speech_provider": "azure_speech_sdk" if speechsdk is not None else "unavailable",
+        },
+        "keys": {
+            "azureVisionKey": bool(AZURE_VISION_KEY),
+            "azureVisionEndpoint": bool(AZURE_VISION_ENDPOINT),
+            "azureSpeechKey": bool(AZURE_SPEECH_KEY),
+            "azureSpeechRegion": bool(AZURE_SPEECH_REGION),
+            "azureSpeechEndpoint": bool(AZURE_SPEECH_ENDPOINT),
+            "odcloudServiceKey": bool(ODCLOUD_SERVICE_KEY),
+            "odcloudAuthorization": bool(ODCLOUD_AUTHORIZATION),
+        },
+        "services": {
+            "pharmacy": {
+                "configured": pharmacy_available,
+                "localCsv": bool(str(PHARMACY_LOCAL_CSV or "").strip()),
+                "servicePath": bool(str(PHARMACY_SERVICE_PATH or "").strip()),
+            },
+            "dur": {
+                "configured": dur_available,
+                "servicePath": bool(str(DUR_SERVICE_PATH or "").strip()),
+            },
+            "ocr": {
+                "configured": easyocr is not None,
+            },
+            "pillImage": {
+                "configured": CHECKPOINT_PATH.exists(),
+                "checkpointPath": str(CHECKPOINT_PATH),
+            },
+        },
+    }
 
 
 def pharmacy_status_payload() -> dict[str, Any]:
@@ -191,6 +239,12 @@ async def health():
 @app.get("/api/pharmacies/status")
 async def pharmacies_status():
     return pharmacy_status_payload()
+
+
+@app.get("/config/status")
+@app.get("/api/config/status")
+async def config_status():
+    return config_status_payload()
 
 
 @app.post("/pharmacy/search")
