@@ -88,6 +88,32 @@ app.add_middleware(
 app.include_router(pharmacy_router)
 
 
+@app.on_event("startup")
+async def log_startup_diagnostics() -> None:
+    route_paths = sorted(
+        {
+            route.path
+            for route in app.routes
+            if getattr(route, "path", None)
+        }
+    )
+    important_paths = [
+        "/health",
+        "/api/health",
+        "/search",
+        "/api/search",
+        "/api/pharmacies/status",
+        "/dur/status",
+        "/api/dur/status",
+        "/ml/dur/status",
+        "/api/ml/dur/status",
+    ]
+    active_paths = [path for path in important_paths if path in route_paths]
+    print(f"STARTUP_FILE: {__file__}")
+    print(f"STARTUP_IMPORT_ROOT: {BACKEND_DIR}")
+    print(f"STARTUP_ROUTES: {', '.join(active_paths)}")
+
+
 def pharmacy_status_payload() -> dict[str, Any]:
     available = bool(pharmacy_service.is_configured())
     missing: list[str] = []
