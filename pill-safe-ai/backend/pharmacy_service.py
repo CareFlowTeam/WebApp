@@ -1,12 +1,11 @@
 from __future__ import annotations
-import os
 
+import csv
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-import csv
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 def get_lat(row: Dict[str, Any]) -> Optional[float]:
     lat, _ = _extract_lat_lon(row)
@@ -22,20 +21,6 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     CRS = None
     Transformer = None
-if CRS is not None:
-    try:
-        print('DEBUG CRS:', CRS.to_string())
-    except Exception:
-        print('DEBUG CRS:', CRS)
-else:
-    print('DEBUG CRS:', CRS)
-if Transformer is not None:
-    try:
-        print('DEBUG Transformer:', Transformer.description)
-    except Exception:
-        print('DEBUG Transformer:', Transformer)
-else:
-    print('DEBUG Transformer:', Transformer)
 
 try:
     # When running as scripts from backend/ directory
@@ -179,8 +164,6 @@ def _extract_lat_lon(row: Dict[str, Any]) -> tuple[Optional[float], Optional[flo
     y = _to_float(row.get("좌표정보(Y)") or row.get("좌표 정보(Y)") or row.get("Y") or row.get("y"))
 
     if x is None or y is None:
-        if lat is None or lon is None:
-            print(f"[LATLON-DEBUG] 좌표 추출 실패: row={row}")
         return (lat, lon)
 
     # If values look like degrees (already lon/lat), handle that too.
@@ -188,9 +171,6 @@ def _extract_lat_lon(row: Dict[str, Any]) -> tuple[Optional[float], Optional[flo
         return (y, x)
 
     if Transformer is None:
-        # Don't return projected coordinates as lat/lon.
-        if lat is None or lon is None:
-            print(f"[LATLON-DEBUG] pyproj 변환 불가, 좌표 없음: row={row}")
         return (lat, lon) if (lat and lon and abs(lat) <= 90 and abs(lon) <= 180) else (None, None)
 
     # Heuristic: try common Korean projected CRSs and pick the first plausible result.
@@ -212,63 +192,81 @@ def _extract_lat_lon(row: Dict[str, Any]) -> tuple[Optional[float], Optional[flo
         except Exception:
             continue
 
-    # If we couldn't convert, do not leak projected coordinates.
-    print(f"[LATLON-DEBUG] 좌표 변환 실패: row={row}")
     return (lat, lon) if (lat and lon and abs(lat) <= 90 and abs(lon) <= 180) else (None, None)
 
 
 
 class PharmacyService:
-    def _local_xlsx_path(self) -> str:
-        """
-        PHARMACY_LOCAL_XLSX 환경변수가 있으면 그 경로를 우선 사용하고,
-        없으면 backend/data/pharmacies_seoul_utf8_business_only_cleaned.xlsx를 반환합니다.
-        경로는 항상 프로젝트 루트 기준으로 절대경로로 변환합니다.
-        """
-        try:
-            from settings import PHARMACY_LOCAL_XLSX
-        except ImportError:
-            PHARMACY_LOCAL_XLSX = None
-        from pathlib import Path
-        backend_dir = Path(__file__).resolve().parent
-        project_root = backend_dir.parent
-        if PHARMACY_LOCAL_XLSX:
-            p = Path(PHARMACY_LOCAL_XLSX)
-            if not p.is_absolute():
-                p = project_root / p
-            return str(p.resolve())
-        return str((project_root / "backend" / "data" / "pharmacies_seoul_utf8_filled_no_missing.xlsx").resolve())
+    def local_data_path(self) -> Optional[Path]:
+        return self._resolve_local_data_path()
 
-    def _fetch_rows_cached(self, *, limit: int = 3000, per_page: int = 200) -> List[Dict[str, Any]]:
-        # 캐시 완전 무시: 항상 새로 읽음
-        xlsx_path = self._local_xlsx_path()
-        rows: List[Dict[str, Any]] = []
-        import os
-        print(f"[XLSX-DEBUG] Trying to open XLSX at: {xlsx_path}")
-        if not os.path.exists(xlsx_path):
-            print(f"[XLSX-DEBUG] XLSX file does NOT exist at: {xlsx_path}")
-        else:
-            print(f"[XLSX-DEBUG] XLSX file exists at: {xlsx_path}")
+    def _resolve_local_data_path(self) -> Optional[Path]:
+        backend_dir = Path(__file__).resolve().parent
+        candidates: list[Path] = []
+
+        configured_csv = str(PHARMACY_LOCAL_CSV or "").strip()
+        if configured_csv:
+            configured_path = Path(configured_csv)
+            if not configured_path.is_absolute():
+                configured_path = backend_dir / configured_path
+            candidates.append(configured_path)
+
+        candidates.extend(
+            [
+                backend_dir / "data" / "pharmacies_seoul_utf8.csv",
+                backend_dir / "data" / "pharmacies_seoul_utf8_filled_no_missing.xlsx",
+                backend_dir / "data" / "pharmacies_seoul_utf8_business_only_cleaned.xlsx",
+            ]
+        )
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+        return None
+
+    def _read_local_csv(self, csv_path: Path) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for encoding in ("utf-8-sig", "cp949", "utf-8"):
+            try:
+                with csv_path.open("r", encoding=encoding, newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    for row in reader:
+                        clean_row = {str(key).replace("\ufeff", "").strip(): value for key, value in row.items()}
+                        rows.append(clean_row)
+                if rows:
+                    return rows
+            except UnicodeDecodeError:
+                rows.clear()
+                continue
+        return rows
+
+    def _read_local_xlsx(self, xlsx_path: Path, limit: int) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
         try:
             import pandas as pd
+
             df = pd.read_excel(xlsx_path)
-            # 컬럼명 앞뒤 공백 및 BOM 제거
-            df.columns = [str(col).replace('\ufeff', '').strip() for col in df.columns]
-            # 컬럼명 매핑(예: '사업장명' → '사업장명', '도로명주소' → '도로명주소')
-            # 필요시 여기에 추가 매핑 가능
-            for i, row in enumerate(df.to_dict(orient='records')):
-                if i < 3:
-                    print(f"[XLSX-DEBUG] row {i} keys: {list(row.keys())}")
-                    print(f"[XLSX-DEBUG] row {i} values: {list(row.values())}")
-                if i >= limit:
+            df.columns = [str(col).replace("\ufeff", "").strip() for col in df.columns]
+            for index, row in enumerate(df.to_dict(orient="records")):
+                if index >= limit:
                     break
-                # row의 키도 공백/BOM 제거
-                clean_row = {str(k).replace('\ufeff', '').strip(): v for k, v in row.items()}
+                clean_row = {str(key).replace("\ufeff", "").strip(): value for key, value in row.items()}
                 rows.append(clean_row)
-        except Exception as e:
-            import logging
-            logging.error(f'PharmacyService: Failed to read XLSX: {e} (path: {xlsx_path})')
-        self._cache = {"ts": time.time(), "rows": rows, "source": str(xlsx_path) if xlsx_path else ""}
+        except Exception:
+            return []
+        return rows
+
+    def _fetch_rows_cached(self, *, limit: int = 3000, per_page: int = 200) -> List[Dict[str, Any]]:
+        local_path = self._resolve_local_data_path()
+        rows: List[Dict[str, Any]] = []
+
+        if local_path is not None:
+            if local_path.suffix.lower() == ".csv":
+                rows = self._read_local_csv(local_path)
+            else:
+                rows = self._read_local_xlsx(local_path, limit)
+
+        self._cache = {"ts": time.time(), "rows": rows, "source": str(local_path) if local_path else ""}
         return list(rows)
     def search(
         self,
@@ -280,9 +278,7 @@ class PharmacyService:
         sort: str = "relevance",
         include_closed: bool = False,
     ) -> List[PharmacyItem]:
-        print(f"[PharmacyService.search] q='{q}', limit={limit}, lat={lat}, lon={lon}, radius_km={radius_km}, sort={sort}")
         rows = self._fetch_rows_cached(limit=3000)
-        print(f"[PharmacyService.search] loaded {len(rows)} rows from CSV")
         candidates = []
         query = str(q or '').strip()
 
@@ -307,13 +303,15 @@ class PharmacyService:
             if not isinstance(row, dict):
                 continue
 
+            if not include_closed:
+                status_name = str(row.get("영업상태명") or row.get("상세영업상태명") or "").strip()
+                if status_name and status_name != "영업/정상":
+                    continue
+
             display_row = {k: row.get(k, '') for k in display_fields}
             # 모든 컬럼을 검색 텍스트로 사용
             text = ' '.join([str(display_row.get(f, '')) for f in display_fields])
             ntext = normalize_korean(text)
-            if idx < 10:
-                print(f"[SEARCH-DEBUG] idx={idx}, query='{query}', text='{text}', nq='{nq}', ntext='{ntext}'")
-
             if not text:
                 continue
 
@@ -356,8 +354,6 @@ class PharmacyService:
                 # 전화번호 추출
                 pharmacy_phone = _pick_first(display_row, ['전화번호'])
                 
-                print(f"[ITEM-DEBUG] name={pharmacy_name}, address={pharmacy_address}, phone={pharmacy_phone}")
-                
                 item = PharmacyItem(
                     name=pharmacy_name,
                     address=pharmacy_address,
@@ -369,9 +365,7 @@ class PharmacyService:
                 )
                 candidates.append((score, item))
             else:
-                print(f"[SEARCH-DEBUG] lat/lon 없음: row={display_row}")
-
-        print(f"[PharmacyService.search] candidates after filter = {len(candidates)}")
+                continue
 
         def _sort_key(pair: tuple[int, PharmacyItem]):
             s, item = pair
@@ -385,11 +379,9 @@ class PharmacyService:
         return [item for _, item in candidates[:limit]]
 
     def is_configured(self) -> bool:
-        # 1) Local XLSX (no ODCloud creds required)
-        if self._local_xlsx_path() is not None:
+        if self._resolve_local_data_path() is not None:
             return True
 
-        # 2) ODCloud dataset
         creds_ok = bool((ODCLOUD_SERVICE_KEY or "").strip() or (ODCLOUD_AUTHORIZATION or "").strip())
         return bool((PHARMACY_SERVICE_PATH or "").strip()) and creds_ok
 

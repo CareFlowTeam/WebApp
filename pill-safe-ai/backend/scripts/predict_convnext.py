@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from pathlib import Path
 
 # 항상 scripts 패키지로 import (main.py에서 sys.path를 올바르게 설정해야 함)
 from scripts.medicine_utils import is_image_file, normalize_label_text
 
 import torch
+import torch.nn as nn
 from PIL import Image
 from timm import create_model
 from torchvision import transforms
+from torchvision import models
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,20 +63,48 @@ def build_relative_path(image_path: Path, input_path: Path) -> str:
     return str(image_path.relative_to(input_path))
 
 
+def _load_sidecar_class_to_idx(checkpoint_path: Path) -> dict[str, int]:
+    sidecar_candidates = [
+        checkpoint_path.with_name("class_to_idx.json"),
+        checkpoint_path.parent / "class_to_idx.json",
+        checkpoint_path.parents[1] / "backend" / "scripts" / "class_to_idx.json" if len(checkpoint_path.parents) > 1 else None,
+    ]
+    for candidate in sidecar_candidates:
+        if candidate is None or not candidate.exists():
+            continue
+        with candidate.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    raise FileNotFoundError("class_to_idx.json not found for checkpoint fallback")
+
+
 def load_model(checkpoint_path: Path, device: torch.device):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    class_to_idx = checkpoint["class_to_idx"]
+
+    if isinstance(checkpoint, dict) and {"class_to_idx", "model_name", "model_state"}.issubset(checkpoint.keys()):
+        class_to_idx = checkpoint["class_to_idx"]
+        classes = [None] * len(class_to_idx)
+        for class_name, class_index in class_to_idx.items():
+            classes[class_index] = class_name
+
+        model = create_model(checkpoint["model_name"], pretrained=False, num_classes=len(classes))
+        model.load_state_dict(checkpoint["model_state"])
+        model.to(device)
+        model.eval()
+
+        img_size = checkpoint.get("args", {}).get("img_size", 224)
+        return model, classes, build_eval_transform(img_size)
+
+    class_to_idx = _load_sidecar_class_to_idx(checkpoint_path)
     classes = [None] * len(class_to_idx)
     for class_name, class_index in class_to_idx.items():
         classes[class_index] = class_name
 
-    model = create_model(checkpoint["model_name"], pretrained=False, num_classes=len(classes))
-    model.load_state_dict(checkpoint["model_state"])
+    model = models.efficientnet_v2_s(weights=None)
+    model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(classes))
+    model.load_state_dict(checkpoint)
     model.to(device)
     model.eval()
-
-    img_size = checkpoint.get("args", {}).get("img_size", 224)
-    return model, classes, build_eval_transform(img_size)
+    return model, classes, build_eval_transform(224)
 
 
 def predict_batch(

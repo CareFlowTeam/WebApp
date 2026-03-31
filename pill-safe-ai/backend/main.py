@@ -9,7 +9,21 @@ from typing import Any, Optional
 
 BACKEND_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = BACKEND_DIR / "scripts"
-CHECKPOINT_PATH = SCRIPTS_DIR / "best_model.pt"
+
+
+def _resolve_checkpoint_path() -> Path:
+    candidates = [
+        SCRIPTS_DIR / "best_model.pt",
+        BACKEND_DIR / "models" / "best_model.pt",
+        BACKEND_DIR.parent / "checkpoints" / "pill_best.pth",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+CHECKPOINT_PATH = _resolve_checkpoint_path()
 
 # backend 폴더를 import 루트로 고정
 sys.path.insert(0, str(BACKEND_DIR))
@@ -124,6 +138,7 @@ def config_status_payload() -> dict[str, Any]:
     dur_service = DurService()
     pharmacy_available = bool(pharmacy_service.is_configured())
     dur_available = bool(dur_service.is_configured())
+    local_pharmacy_data = pharmacy_service.local_data_path()
 
     return {
         "status": "success",
@@ -144,7 +159,8 @@ def config_status_payload() -> dict[str, Any]:
         "services": {
             "pharmacy": {
                 "configured": pharmacy_available,
-                "localCsv": bool(str(PHARMACY_LOCAL_CSV or "").strip()),
+                "localCsv": local_pharmacy_data is not None,
+                "localCsvPath": str(local_pharmacy_data) if local_pharmacy_data is not None else "",
                 "servicePath": bool(str(PHARMACY_SERVICE_PATH or "").strip()),
             },
             "dur": {
@@ -165,12 +181,13 @@ def config_status_payload() -> dict[str, Any]:
 def pharmacy_status_payload() -> dict[str, Any]:
     available = bool(pharmacy_service.is_configured())
     missing: list[str] = []
+    local_pharmacy_data = pharmacy_service.local_data_path()
 
     local_csv = str(PHARMACY_LOCAL_CSV or "").strip()
     if not local_csv:
-        if not str(PHARMACY_SERVICE_PATH or "").strip():
+        if local_pharmacy_data is None and not str(PHARMACY_SERVICE_PATH or "").strip():
             missing.append("PHARMACY_LOCAL_CSV(or PHARMACY_SERVICE_PATH)")
-        if not (str(ODCLOUD_SERVICE_KEY or "").strip() or str(ODCLOUD_AUTHORIZATION or "").strip()):
+        if local_pharmacy_data is None and not (str(ODCLOUD_SERVICE_KEY or "").strip() or str(ODCLOUD_AUTHORIZATION or "").strip()):
             missing.append("ODCLOUD_SERVICE_KEY(or ODCLOUD_AUTHORIZATION)")
 
     hint = ""
@@ -185,6 +202,7 @@ def pharmacy_status_payload() -> dict[str, Any]:
         "status": "success",
         "available": available,
         "configured": available,
+        "localDataPath": str(local_pharmacy_data) if local_pharmacy_data is not None else "",
         "missing": missing,
         "hint": hint,
     }
