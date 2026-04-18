@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover
 
 try:
     from dur_service import DurService, DurServiceError
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     from .dur_service import DurService, DurServiceError
 
 app = Flask(__name__)
